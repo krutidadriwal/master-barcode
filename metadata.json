@@ -1,0 +1,6 @@
+{
+  "name": "Master Barcode Generator",
+  "description": "A modular, production-grade barcode generator featuring auto-detect EAN-13, UPC, and Code128, custom print preview, PDF export, caching, and a modular architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
