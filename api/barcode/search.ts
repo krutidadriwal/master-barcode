@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { SupabaseProductRepository } from '../../src/shared/repositories/SupabaseProductRepository';
+import { SupabaseProductRepository } from '../_lib/SupabaseProductRepository';
 
 const repository = new SupabaseProductRepository();
 

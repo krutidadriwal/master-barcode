@@ -2,8 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { SupabaseProductRepository } from './src/shared/repositories/SupabaseProductRepository';
-import { SupabaseShipmentRepository } from './src/shared/repositories/SupabaseShipmentRepository';
+import { SupabaseProductRepository } from './api/_lib/SupabaseProductRepository';
+import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepository';
 
 async function startServer() {
   const app = express();
