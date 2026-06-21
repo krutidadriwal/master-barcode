@@ -4,6 +4,8 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { SupabaseProductRepository } from './api/_lib/SupabaseProductRepository';
 import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepository';
+import { ProductionOrderRepository } from './api/_lib/ProductionOrderRepository';
+import { ProductionOrderSyncService } from './api/_lib/ProductionOrderSyncService';
 
 async function startServer() {
   const app = express();
@@ -15,6 +17,8 @@ async function startServer() {
   // Initialize repositories
   const repository = new SupabaseProductRepository();
   const shipmentRepository = new SupabaseShipmentRepository();
+  const productionOrderRepository = new ProductionOrderRepository();
+  const productionOrderSyncService = new ProductionOrderSyncService();
 
   // BFF API Routes
   app.get('/api/health', (req, res) => {
@@ -249,6 +253,44 @@ async function startServer() {
     } catch (error: any) {
       console.error('[BFF API] Reset shipment error:', error);
       return res.status(500).json({ error: 'Failed to reset shipments table.' });
+    }
+  });
+
+  app.get('/api/production-order/list', async (_req, res) => {
+    try {
+      const rows = await productionOrderRepository.getAllOrders();
+      const orders = rows.map(row => ({
+        reference_code: row.reference_code_short,
+        reference_code_original: row.reference_code_original,
+        import_date: row.import_date,
+        sku: row.sku,
+        product_name: row.product_name,
+        brand: row.brand,
+        order_qty: row.order_quantity,
+        shipped_qty: row.shipped_quantity,
+        cancelled_qty: row.cancelled_quantity,
+        item_qty: row.item_quantity,
+        ean: row.ean,
+        size: row.size,
+        model_no: row.model_no,
+        status: row.cancelled_quantity > 0 ? 'Cancelled'
+              : row.shipped_quantity >= row.item_quantity ? 'Completed'
+              : 'Pending',
+      }));
+      return res.json(orders);
+    } catch (error: any) {
+      console.error('[BFF API] Production order list error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to retrieve production orders.' });
+    }
+  });
+
+  app.post('/api/production-order/sync', async (_req, res) => {
+    try {
+      const result = await productionOrderSyncService.sync();
+      return res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error('[BFF API] Production order sync error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to sync production orders from EasyEcom.' });
     }
   });
 
