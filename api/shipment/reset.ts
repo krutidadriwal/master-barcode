@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { SupabaseShipmentRepository } from '../_lib/SupabaseShipmentRepository';
+import { SupabaseShipmentRepository } from '../_lib/SupabaseShipmentRepository.js';
 
 const shipmentRepository = new SupabaseShipmentRepository();
 
