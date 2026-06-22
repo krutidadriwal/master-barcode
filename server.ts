@@ -252,30 +252,49 @@ async function startServer() {
   /**
    * Confirm current scan session. Increment database fulfilled quantities by scanned counted quantities.
    */
+  /**
+   * Real-time scan write: increments session_qty by 1 for the scanned SKU immediately on each scan.
+   */
+  app.post('/api/shipment/scan', async (req, res) => {
+    try {
+      const { sku, sku_name, product_id, planned_mode } = req.body;
+      if (!sku) return res.status(400).json({ error: 'sku is required.' });
+      const mode: 'AIR' | 'SEA' = (planned_mode || 'AIR').toString().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
+      await shipmentRepository.incrementSessionQty(sku, sku_name || sku, product_id || null, mode);
+      return res.json({ success: true });
+    } catch (error: any) {
+      console.error('[BFF API] Real-time scan write error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to persist scan.' });
+    }
+  });
+
+  /**
+   * Confirm session: moves session_qty → fulfilled_qty and resets session_qty = 0.
+   */
   app.post('/api/shipment/confirm', async (req, res) => {
     try {
-      const { countingQty, planned_mode } = req.body;
-      if (!countingQty || typeof countingQty !== 'object') {
-        return res.status(400).json({ error: 'countingQty must be a key-value object of scanned counts.' });
-      }
+      const { planned_mode } = req.body;
       const mode: 'AIR' | 'SEA' = (planned_mode || 'AIR').toString().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
-
-      const allProducts = await repository.getAllProducts();
-
-      for (const [sku, counted] of Object.entries(countingQty)) {
-        if (typeof counted !== 'number' || counted <= 0) continue;
-
-        const prod = allProducts.find(p => p.sku && p.sku.toLowerCase() === sku.toLowerCase());
-        const name = prod ? prod.item_name : `Unexpected SKU ${sku}`;
-        const prodId = prod ? prod.product_id : null;
-
-        await shipmentRepository.incrementFulfilledQty(sku, name, prodId, counted, mode);
-      }
-
+      await shipmentRepository.commitSession(mode);
       return res.json({ success: true });
     } catch (error: any) {
       console.error('[BFF API] Session confirmation error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to record session quantities into shipment rows.' });
+      return res.status(500).json({ error: error.message || 'Failed to confirm session.' });
+    }
+  });
+
+  /**
+   * Discard session: resets session_qty = 0 without touching fulfilled_qty.
+   */
+  app.post('/api/shipment/discard', async (req, res) => {
+    try {
+      const { planned_mode } = req.body;
+      const mode: 'AIR' | 'SEA' = (planned_mode || 'AIR').toString().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
+      await shipmentRepository.discardSession(mode);
+      return res.json({ success: true });
+    } catch (error: any) {
+      console.error('[BFF API] Discard session error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to discard session.' });
     }
   });
 

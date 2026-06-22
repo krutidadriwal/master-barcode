@@ -122,8 +122,14 @@ export function ShipmentBarcodeForm() {
     try {
       const res = await fetch(`/api/shipment/list?mode=${mode}`);
       if (res.ok) {
-        const data = await res.json();
+        const data: ShipmentItem[] = await res.json();
         setShipmentItems(data);
+        // Restore in-progress session counts from DB so a refresh doesn't lose them
+        const restored: { [sku: string]: number } = {};
+        for (const item of data) {
+          if ((item.session_qty ?? 0) > 0) restored[item.sku] = item.session_qty!;
+        }
+        setCountingQty(prev => ({ ...prev, ...restored }));
       }
     } catch (err) {
       console.error('Failed to load shipment details:', err);
@@ -342,6 +348,12 @@ export function ShipmentBarcodeForm() {
             type: 'success',
             message: `RECEIVED: [${product.sku}] ${product.item_name}. Automated label sent to printer.`
           });
+          // Persist scan to DB in real-time (fire-and-forget — does not block scanning)
+          fetch('/api/shipment/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sku: product.sku, sku_name: product.item_name, product_id: product.product_id, planned_mode: activeMode }),
+          }).catch(err => console.warn('[Scan Persist] Failed to write scan to DB:', err));
           // Push print job
           setActivePrintBatch([{ product }]);
         } else {
@@ -585,6 +597,12 @@ export function ShipmentBarcodeForm() {
   // Discards current local counting logs to begin a new scan session
   const handleDiscardSession = () => {
     if (window.confirm("ARE YOU ABSOLUTELY SURE? This will permanently discard all current scanned counts and reset the receiving workspace without saving any changes to the database.")) {
+      // Reset session_qty in DB so restored counts don't reappear on next refresh
+      fetch('/api/shipment/discard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planned_mode: activeMode }),
+      }).catch(err => console.warn('[Discard] Failed to reset session_qty in DB:', err));
       setCountingQty({});
       setNoProductData([]);
       setExcessQtyFrequency({});
@@ -608,7 +626,7 @@ export function ShipmentBarcodeForm() {
       const res = await fetch('/api/shipment/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ countingQty, planned_mode: activeMode })
+        body: JSON.stringify({ planned_mode: activeMode })
       });
 
       if (!res.ok) {
