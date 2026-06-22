@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ProductionOrderSyncService } from '../_lib/ProductionOrderSyncService';
+import { ProductionOrderSyncService } from '../_lib/ProductionOrderSyncService.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });

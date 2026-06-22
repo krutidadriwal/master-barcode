@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ProductionOrderRepository } from '../_lib/ProductionOrderRepository';
+import { ProductionOrderRepository } from '../_lib/ProductionOrderRepository.js';
 
 const repository = new ProductionOrderRepository();
 
