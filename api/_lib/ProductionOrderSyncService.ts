@@ -96,12 +96,14 @@ export class ProductionOrderSyncService {
   private baseUrl: string;
   private email: string;
   private password: string;
+  private apiKey: string;
 
   constructor() {
     this.repo = new ProductionOrderRepository();
     this.baseUrl = (process.env.EASYECOM_BASE_URL || 'https://api.easyecom.io').replace(/\/$/, '');
     this.email = process.env.EASYECOM_EMAIL || '';
     this.password = process.env.EASYECOM_PASSWORD || '';
+    this.apiKey = process.env.EASYECOM_API_KEY || '';
   }
 
   async generateToken(): Promise<string> {
@@ -149,13 +151,13 @@ export class ProductionOrderSyncService {
     const url = `${this.baseUrl}/orders/V2/getAllOrders?${params.toString()}`;
     console.log(`[PO Sync] Fetching chunk ${startDate} → ${endDate}`);
 
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Authorization': token,
-        'Content-Type': 'application/json',
-      },
-    });
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    };
+    if (this.apiKey) headers['x-api-key'] = this.apiKey;
+
+    const res = await fetch(url, { method: 'GET', headers });
 
     if (!res.ok) {
       const body = await res.text();

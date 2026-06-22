@@ -80,6 +80,83 @@ export class SupabaseProductRepository {
     }
   }
 
+  private extractSkuBase(sku: string): string {
+    return sku.replace(/[^0-9]+$/i, '');
+  }
+
+  // Aggregates the best available custom_ean and ean_upc from all siblings in one query.
+  private async findSiblingEan(sku: string): Promise<Pick<Product, 'ean_upc' | 'custom_ean'> | null> {
+    const base = this.extractSkuBase(sku);
+    if (!base) return null;
+
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query(
+          `SELECT
+             MAX(CASE WHEN COALESCE(custom_ean, '') != '' THEN custom_ean END) AS custom_ean,
+             MAX(CASE WHEN COALESCE(ean_upc, '') != '' THEN ean_upc END) AS ean_upc
+           FROM products
+           WHERE REGEXP_REPLACE(sku, '[^0-9]+$', '') = $1
+             AND LOWER(sku) != LOWER($2)`,
+          [base, sku]
+        );
+        const row = res.rows?.[0];
+        if (row?.custom_ean || row?.ean_upc) {
+          return { custom_ean: row.custom_ean || undefined, ean_upc: row.ean_upc || '' };
+        }
+      } catch (err) {
+        console.error('[BFF Direct PG] Sibling EAN lookup failed:', err);
+      }
+    }
+
+    if (this.supabaseClient) {
+      try {
+        const { data } = await this.supabaseClient
+          .from('products')
+          .select('sku, ean_upc, custom_ean')
+          .like('sku', `${base}%`)
+          .limit(20);
+        const siblings = data?.filter(
+          p => this.extractSkuBase(p.sku) === base && p.sku.toLowerCase() !== sku.toLowerCase()
+        ) ?? [];
+        const siblingCustomEan = siblings.find(p => p.custom_ean?.trim())?.custom_ean;
+        const siblingEanUpc = siblings.find(p => p.ean_upc?.trim())?.ean_upc;
+        if (siblingCustomEan || siblingEanUpc) {
+          return { custom_ean: siblingCustomEan || undefined, ean_upc: siblingEanUpc || '' };
+        }
+      } catch (err) {
+        console.error('[BFF REST] Sibling EAN lookup failed:', err);
+      }
+    }
+
+    const siblings = this.mockProducts.filter(
+      p => this.extractSkuBase(p.sku) === base && p.sku.toLowerCase() !== sku.toLowerCase()
+    );
+    const siblingCustomEan = siblings.find(p => p.custom_ean?.trim())?.custom_ean;
+    const siblingEanUpc = siblings.find(p => p.ean_upc?.trim())?.ean_upc;
+    if (siblingCustomEan || siblingEanUpc) {
+      return { custom_ean: siblingCustomEan || undefined, ean_upc: siblingEanUpc || '' };
+    }
+    return null;
+  }
+
+  // Fills missing custom_ean and ean_upc independently from siblings.
+  // Priority per field: own value → sibling value. BarcodePreview then applies custom_ean → ean_upc → sku.
+  private async fillSiblingEan(product: Product): Promise<Product> {
+    const needsCustomEan = !product.custom_ean?.trim();
+    const needsEanUpc = !product.ean_upc?.trim();
+    if (!needsCustomEan && !needsEanUpc) return product;
+
+    const sibling = await this.findSiblingEan(product.sku);
+    if (!sibling) return product;
+
+    return {
+      ...product,
+      ...(needsCustomEan && sibling.custom_ean ? { custom_ean: sibling.custom_ean } : {}),
+      ...(needsEanUpc && sibling.ean_upc ? { ean_upc: sibling.ean_upc } : {}),
+    };
+  }
+
   async searchProduct(identifier: string): Promise<Product | null> {
     const query = identifier.trim();
     if (!query) return null;
@@ -88,7 +165,7 @@ export class SupabaseProductRepository {
       try {
         await this.ensurePgTable();
         const res = await this.pgPool.query(
-          `SELECT product_id, sku, item_name, mrp, ean_upc, batch_no
+          `SELECT product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no
            FROM products
            WHERE LOWER(ean_upc) = LOWER($1)
               OR LOWER(sku) = LOWER($1)
@@ -99,14 +176,15 @@ export class SupabaseProductRepository {
 
         if (res.rows && res.rows.length > 0) {
           console.log(`[BFF Direct PG] [SUCCESS] Successfully fetched product "${query}" from Supabase:`, res.rows[0]);
-          return {
+          return this.fillSiblingEan({
             product_id: res.rows[0].product_id || '',
             sku: res.rows[0].sku || '',
             item_name: res.rows[0].item_name || '',
             mrp: res.rows[0].mrp || '',
             ean_upc: res.rows[0].ean_upc || '',
+            custom_ean: res.rows[0].custom_ean || undefined,
             batch_no: res.rows[0].batch_no || undefined
-          };
+          });
         }
       } catch (err) {
         console.error("[BFF Direct PG] Failed to fetch product via Postgres client:", err);
@@ -117,7 +195,7 @@ export class SupabaseProductRepository {
       try {
         const { data, error } = await this.supabaseClient
           .from('products')
-          .select('product_id, sku, item_name, mrp, ean_upc, batch_no')
+          .select('product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no')
           .or(`ean_upc.eq."${query}",sku.eq."${query}",product_id.eq."${query}"`)
           .maybeSingle();
 
@@ -125,14 +203,15 @@ export class SupabaseProductRepository {
           console.error("[BFF REST] Supabase REST query exception:", error);
         } else if (data) {
           console.log(`[BFF REST] [SUCCESS] Successfully fetched product "${query}" from Supabase REST client:`, data);
-          return {
+          return this.fillSiblingEan({
             product_id: data.product_id || '',
             sku: data.sku || '',
             item_name: data.item_name || '',
             mrp: data.mrp || '',
             ean_upc: data.ean_upc || '',
+            custom_ean: data.custom_ean || undefined,
             batch_no: data.batch_no || undefined
-          };
+          });
         }
       } catch (err) {
         console.error("[BFF REST] Exception querying Supabase client SDK:", err);
@@ -141,11 +220,11 @@ export class SupabaseProductRepository {
 
     const cleanQuery = query.toLowerCase();
     let match = this.mockProducts.find(p => p.ean_upc.toLowerCase() === cleanQuery);
-    if (match) return match;
+    if (match) return this.fillSiblingEan(match);
     match = this.mockProducts.find(p => p.sku.toLowerCase() === cleanQuery);
-    if (match) return match;
+    if (match) return this.fillSiblingEan(match);
     match = this.mockProducts.find(p => p.product_id.toLowerCase() === cleanQuery);
-    if (match) return match;
+    if (match) return this.fillSiblingEan(match);
     return null;
   }
 
@@ -211,7 +290,7 @@ export class SupabaseProductRepository {
       try {
         await this.ensurePgTable();
         const res = await this.pgPool.query(
-          `SELECT product_id, sku, item_name, mrp, ean_upc, batch_no
+          `SELECT product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no
            FROM products
            ORDER BY item_name ASC`
         );
@@ -223,6 +302,7 @@ export class SupabaseProductRepository {
             item_name: row.item_name || '',
             mrp: row.mrp || '',
             ean_upc: row.ean_upc || '',
+            custom_ean: row.custom_ean || undefined,
             batch_no: row.batch_no || undefined
           }));
         }
@@ -235,7 +315,7 @@ export class SupabaseProductRepository {
       try {
         const { data, error } = await this.supabaseClient
           .from('products')
-          .select('product_id, sku, item_name, mrp, ean_upc, batch_no')
+          .select('product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no')
           .order('item_name', { ascending: true });
 
         if (error) {

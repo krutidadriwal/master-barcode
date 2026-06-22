@@ -256,6 +256,33 @@ async function startServer() {
     }
   });
 
+  app.get('/api/production-order/search', async (req, res) => {
+    const code = (req.query.code || '').toString().trim();
+    if (!code) return res.status(400).json({ error: 'code query parameter is required.' });
+    try {
+      const rows = await productionOrderRepository.searchByShortCode(code);
+      return res.json(rows);
+    } catch (error: any) {
+      console.error('[BFF API] Production order search error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to search production orders.' });
+    }
+  });
+
+  app.post('/api/production-order/update-match', async (req, res) => {
+    const { id, user_sku, row_sku } = req.body;
+    if (!id || user_sku === undefined || !row_sku) {
+      return res.status(400).json({ error: 'id, user_sku, and row_sku are required.' });
+    }
+    const codeMatch = user_sku.toString().trim().toLowerCase() === row_sku.toString().trim().toLowerCase();
+    try {
+      await productionOrderRepository.updateCodeMatch(Number(id), codeMatch);
+      return res.json({ code_match: codeMatch });
+    } catch (error: any) {
+      console.error('[BFF API] update-match error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to update code match.' });
+    }
+  });
+
   app.get('/api/production-order/list', async (_req, res) => {
     try {
       const rows = await productionOrderRepository.getAllOrders();

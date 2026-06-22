@@ -9,6 +9,7 @@ export interface Product {
 }
 
 export interface ProductionOrderRow {
+  id?: number;
   reference_code_original: string;
   reference_code_short: string;
   import_date: string;
@@ -26,6 +27,7 @@ export interface ProductionOrderRow {
   model_no: string;
   ean: string;
   size: string;
+  code_match?: boolean | null;
   created_at?: string;
   updated_at?: string;
 }

@@ -81,10 +81,12 @@ export class ProductionOrderRepository {
           model_no                VARCHAR(100),
           ean                     VARCHAR(100),
           size                    VARCHAR(50),
+          code_match              BOOLEAN,
           created_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
           updated_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
           UNIQUE (reference_code_original, sku)
         );
+        ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS code_match BOOLEAN;
       `);
     } finally {
       client.release();
@@ -189,11 +191,11 @@ export class ProductionOrderRepository {
       try {
         await this.ensureTable();
         const res = await this.pgPool.query(
-          `SELECT reference_code_original, reference_code_short, import_date,
+          `SELECT id, reference_code_original, reference_code_short, import_date,
                   order_quantity, item_status, suborder_quantity, item_quantity,
                   returned_quantity, cancelled_quantity, shipped_quantity,
                   sku, sub_product_count, product_name, brand, model_no, ean, size,
-                  created_at, updated_at
+                  code_match, created_at, updated_at
            FROM ${TABLE}
            ORDER BY import_date DESC, reference_code_original ASC`
         );
@@ -211,6 +213,69 @@ export class ProductionOrderRepository {
         .order('import_date', { ascending: false });
       if (error) throw new Error(error.message);
       return (data || []) as ProductionOrderRow[];
+    }
+
+    throw new Error('No database configured for production order repository.');
+  }
+
+  async searchByShortCode(shortCode: string): Promise<ProductionOrderRow[]> {
+    const q = shortCode.trim();
+    if (!q) return [];
+
+    if (this.pgPool) {
+      try {
+        await this.ensureTable();
+        const res = await this.pgPool.query(
+          `SELECT id, reference_code_original, reference_code_short, import_date,
+                  order_quantity, item_status, item_quantity, shipped_quantity,
+                  cancelled_quantity, sku, product_name, brand, model_no, ean, size, code_match
+           FROM ${TABLE}
+           WHERE reference_code_short ILIKE $1
+              OR reference_code_original ILIKE $2
+           ORDER BY import_date DESC`,
+          [q, `%${q}`]
+        );
+        return res.rows as ProductionOrderRow[];
+      } catch (err) {
+        console.error('[PO Repo] searchByShortCode error:', err);
+        throw err;
+      }
+    }
+
+    if (this.supabaseClient) {
+      const { data, error } = await this.supabaseClient
+        .from(TABLE)
+        .select('id, reference_code_original, reference_code_short, import_date, order_quantity, item_status, item_quantity, shipped_quantity, cancelled_quantity, sku, product_name, brand, model_no, ean, size, code_match')
+        .or(`reference_code_short.ilike.${q},reference_code_original.ilike.%${q}`)
+        .order('import_date', { ascending: false });
+      if (error) throw new Error(error.message);
+      return (data || []) as ProductionOrderRow[];
+    }
+
+    throw new Error('No database configured for production order repository.');
+  }
+
+  async updateCodeMatch(id: number, codeMatch: boolean): Promise<void> {
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query(
+          `UPDATE ${TABLE} SET code_match = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+          [codeMatch, id]
+        );
+        return;
+      } catch (err) {
+        console.error('[PO Repo] updateCodeMatch error:', err);
+        throw err;
+      }
+    }
+
+    if (this.supabaseClient) {
+      const { error } = await this.supabaseClient
+        .from(TABLE)
+        .update({ code_match: codeMatch, updated_at: new Date().toISOString() })
+        .eq('id', id);
+      if (error) throw new Error(error.message);
+      return;
     }
 
     throw new Error('No database configured for production order repository.');
