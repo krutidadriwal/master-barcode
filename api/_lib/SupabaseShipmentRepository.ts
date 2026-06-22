@@ -319,7 +319,12 @@ export class SupabaseShipmentRepository {
     }
   }
 
-  /** Increments session_qty by 1 for the scanned SKU in real-time (called on every valid scan). */
+  /**
+   * Called on every valid scan. Commits immediately to fulfilled_qty (no staging) so data
+   * survives system failure. session_qty tracks the current-session contribution for two purposes:
+   *   1. Restore countingQty on page refresh.
+   *   2. Allow Discard to reverse fulfilled_qty by exactly what this session added.
+   */
   async incrementSessionQty(
     sku: string, skuName: string, productId: string | null, mode: 'AIR' | 'SEA'
   ): Promise<void> {
@@ -329,9 +334,12 @@ export class SupabaseShipmentRepository {
       await this.ensurePgTable();
       await this.pgPool.query(
         `INSERT INTO shipment_barcode (sku, planned_mode, product_id, sku_name, cu_ordered_qty, fulfilled_qty, session_qty, updated_at)
-         VALUES ($1, $2, $3, $4, 0, 0, 1, CURRENT_TIMESTAMP)
+         VALUES ($1, $2, $3, $4, 0, 1, 1, CURRENT_TIMESTAMP)
          ON CONFLICT (sku, planned_mode)
-         DO UPDATE SET session_qty = shipment_barcode.session_qty + 1, updated_at = CURRENT_TIMESTAMP;`,
+         DO UPDATE SET
+           fulfilled_qty = shipment_barcode.fulfilled_qty + 1,
+           session_qty   = shipment_barcode.session_qty   + 1,
+           updated_at    = CURRENT_TIMESTAMP;`,
         [sku, mode, productId || null, skuName.trim()]
       );
       return;
@@ -339,64 +347,41 @@ export class SupabaseShipmentRepository {
 
     if (this.supabaseClient) {
       const { data: existing } = await this.supabaseClient
-        .from('shipment_barcode').select('session_qty')
+        .from('shipment_barcode').select('fulfilled_qty, session_qty')
         .eq('sku', sku).eq('planned_mode', mode).maybeSingle();
       if (existing) {
         await this.supabaseClient.from('shipment_barcode')
-          .update({ session_qty: (existing.session_qty || 0) + 1, updated_at: new Date().toISOString() })
+          .update({
+            fulfilled_qty: (existing.fulfilled_qty || 0) + 1,
+            session_qty:   (existing.session_qty   || 0) + 1,
+            updated_at: new Date().toISOString()
+          })
           .eq('sku', sku).eq('planned_mode', mode);
       } else {
         await this.supabaseClient.from('shipment_barcode')
-          .insert({ sku, planned_mode: mode, product_id: productId || null, sku_name: skuName.trim(), cu_ordered_qty: 0, fulfilled_qty: 0, session_qty: 1, updated_at: new Date().toISOString() });
+          .insert({ sku, planned_mode: mode, product_id: productId || null, sku_name: skuName.trim(), cu_ordered_qty: 0, fulfilled_qty: 1, session_qty: 1, updated_at: new Date().toISOString() });
       }
       return;
     }
 
     const idx = this.mockShipments.findIndex(s => s.sku.toLowerCase() === sku.toLowerCase() && s.planned_mode === mode);
     if (idx !== -1) {
-      this.mockShipments[idx].session_qty = (this.mockShipments[idx].session_qty || 0) + 1;
+      this.mockShipments[idx].fulfilled_qty = (this.mockShipments[idx].fulfilled_qty || 0) + 1;
+      this.mockShipments[idx].session_qty   = (this.mockShipments[idx].session_qty   || 0) + 1;
     } else {
-      this.mockShipments.push({ sku, planned_mode: mode, product_id: productId || undefined, sku_name: skuName, cu_ordered_qty: 0, fulfilled_qty: 0, session_qty: 1 });
+      this.mockShipments.push({ sku, planned_mode: mode, product_id: productId || undefined, sku_name: skuName, cu_ordered_qty: 0, fulfilled_qty: 1, session_qty: 1 });
     }
   }
 
-  /** Moves session_qty into fulfilled_qty and resets session_qty = 0 (called at Confirm Session). */
+  /**
+   * Confirm session: data is already committed in fulfilled_qty, so just clear session_qty.
+   */
   async commitSession(mode: 'AIR' | 'SEA'): Promise<void> {
     if (this.pgPool) {
       await this.ensurePgTable();
       await this.pgPool.query(
-        `UPDATE shipment_barcode
-         SET fulfilled_qty = fulfilled_qty + session_qty, session_qty = 0, updated_at = CURRENT_TIMESTAMP
+        `UPDATE shipment_barcode SET session_qty = 0, updated_at = CURRENT_TIMESTAMP
          WHERE planned_mode = $1 AND session_qty > 0;`,
-        [mode]
-      );
-      return;
-    }
-
-    if (this.supabaseClient) {
-      const { data: rows } = await this.supabaseClient
-        .from('shipment_barcode').select('sku, fulfilled_qty, session_qty')
-        .eq('planned_mode', mode).gt('session_qty', 0);
-      for (const row of rows ?? []) {
-        await this.supabaseClient.from('shipment_barcode')
-          .update({ fulfilled_qty: (row.fulfilled_qty || 0) + (row.session_qty || 0), session_qty: 0, updated_at: new Date().toISOString() })
-          .eq('sku', row.sku).eq('planned_mode', mode);
-      }
-      return;
-    }
-
-    for (const s of this.mockShipments.filter(s => s.planned_mode === mode)) {
-      s.fulfilled_qty = (s.fulfilled_qty || 0) + (s.session_qty || 0);
-      s.session_qty = 0;
-    }
-  }
-
-  /** Resets session_qty = 0 for all rows in the mode (called at Discard Session). */
-  async discardSession(mode: 'AIR' | 'SEA'): Promise<void> {
-    if (this.pgPool) {
-      await this.ensurePgTable();
-      await this.pgPool.query(
-        `UPDATE shipment_barcode SET session_qty = 0, updated_at = CURRENT_TIMESTAMP WHERE planned_mode = $1;`,
         [mode]
       );
       return;
@@ -410,6 +395,45 @@ export class SupabaseShipmentRepository {
     }
 
     for (const s of this.mockShipments.filter(s => s.planned_mode === mode)) {
+      s.session_qty = 0;
+    }
+  }
+
+  /**
+   * Discard session: reverses this session's fulfilled_qty contribution, then clears session_qty.
+   */
+  async discardSession(mode: 'AIR' | 'SEA'): Promise<void> {
+    if (this.pgPool) {
+      await this.ensurePgTable();
+      await this.pgPool.query(
+        `UPDATE shipment_barcode
+         SET fulfilled_qty = GREATEST(0, fulfilled_qty - session_qty),
+             session_qty   = 0,
+             updated_at    = CURRENT_TIMESTAMP
+         WHERE planned_mode = $1 AND session_qty > 0;`,
+        [mode]
+      );
+      return;
+    }
+
+    if (this.supabaseClient) {
+      const { data: rows } = await this.supabaseClient
+        .from('shipment_barcode').select('sku, fulfilled_qty, session_qty')
+        .eq('planned_mode', mode).gt('session_qty', 0);
+      for (const row of rows ?? []) {
+        await this.supabaseClient.from('shipment_barcode')
+          .update({
+            fulfilled_qty: Math.max(0, (row.fulfilled_qty || 0) - (row.session_qty || 0)),
+            session_qty: 0,
+            updated_at: new Date().toISOString()
+          })
+          .eq('sku', row.sku).eq('planned_mode', mode);
+      }
+      return;
+    }
+
+    for (const s of this.mockShipments.filter(s => s.planned_mode === mode)) {
+      s.fulfilled_qty = Math.max(0, (s.fulfilled_qty || 0) - (s.session_qty || 0));
       s.session_qty = 0;
     }
   }

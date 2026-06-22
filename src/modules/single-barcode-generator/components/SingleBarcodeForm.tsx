@@ -107,8 +107,9 @@ export function SingleBarcodeForm() {
     setError(null);
     try {
       const foundProduct = await BarcodeApi.searchProduct(queryId);
+
       setProduct(foundProduct);
-      
+
       // Save this generation to reprint cache automatically
       saveGenerationToCache(foundProduct, queryId, quantity);
     } catch (err: any) {

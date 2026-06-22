@@ -79,12 +79,14 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
     return `Rs. ${clean}/-`;
   };
 
-  // Barcode priority: custom_ean → ean_upc → sku
-  const barcodeValue = (product.custom_ean && product.custom_ean.trim() !== '')
-    ? product.custom_ean.trim()
-    : (product.ean_upc && product.ean_upc.trim() !== '')
+  const validBarcode = (val?: string) => { const v = val?.trim() ?? ''; return v !== '' && v !== '0'; };
+
+  // Barcode priority: custom_ean → ean_upc → sku (skips empty or literal "0")
+  const barcodeValue = validBarcode(product.custom_ean)
+    ? product.custom_ean!.trim()
+    : validBarcode(product.ean_upc)
       ? product.ean_upc.trim()
-      : (product.sku && product.sku.trim() !== '' ? product.sku.trim() : '990011');
+      : (product.sku?.trim() || '990011');
 
   // Detect format dynamically using shared services
   const autoFormat = BarcodeGeneratorService.detectFormat(barcodeValue);

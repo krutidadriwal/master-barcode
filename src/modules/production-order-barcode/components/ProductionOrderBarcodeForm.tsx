@@ -188,8 +188,9 @@ export function ProductionOrderBarcodeForm() {
   };
 
   const printProduct = productData;
+  const validEan = (v?: string) => { const s = v?.trim() ?? ''; return s !== '' && s !== '0' ? s : null; };
   const barcodeValue = productData
-    ? (productData.custom_ean?.trim() || productData.ean_upc?.trim() || productData.sku?.trim() || '—')
+    ? (validEan(productData.custom_ean) ?? validEan(productData.ean_upc) ?? productData.sku?.trim() ?? '—')
     : '—';
   const hasSearched = shortCode.trim().length >= 4 && !searchLoading;
 
@@ -347,7 +348,6 @@ export function ProductionOrderBarcodeForm() {
                 </div>
               </div>
             )}
-
             {/* SKU verification */}
             <div className="pt-3 border-t border-slate-800/60 space-y-3">
               <p className="text-xs text-slate-400">

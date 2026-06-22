@@ -244,30 +244,16 @@ export class SupabaseProductRepository {
 
     // Fallback search inside mock local catalog (Memory Registry sandbox)
     const cleanQuery = query.toLowerCase();
+    const mockMatch =
+      this.mockProducts.find(p => p.ean_upc.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.sku.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.product_id.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.custom_ean?.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.article_number?.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.model_no?.toLowerCase() === cleanQuery);
 
-    // 1. Search ean_upc
-    let match = this.mockProducts.find(p => p.ean_upc.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-
-    // 2. Search sku
-    match = this.mockProducts.find(p => p.sku.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-
-    // 3. Search product_id
-    match = this.mockProducts.find(p => p.product_id.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-
-    // 4. Search article_number
-    match = this.mockProducts.find(p => p.custom_ean?.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-    match = this.mockProducts.find(p => p.article_number?.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-
-    // 5. Search model_no
-    match = this.mockProducts.find(p => p.model_no?.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-
-    return null;
+    if (!mockMatch) return null;
+    return this.fillSiblingEan(mockMatch);
   }
 
   /**

@@ -8,6 +8,7 @@ export interface Product {
   batch_no?: string;
   article_number?: string;
   model_no?: string;
+
 }
 
 export interface ProductionOrderRow {

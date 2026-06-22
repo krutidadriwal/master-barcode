@@ -42,6 +42,7 @@ interface ShipmentItem {
   sku_name: string;
   cu_ordered_qty: number;
   fulfilled_qty: number;
+  session_qty?: number;
 }
 
 export function ShipmentBarcodeForm() {
@@ -169,9 +170,15 @@ export function ShipmentBarcodeForm() {
   // Handle automatic printing when an active print batch is populated.
   // SILENT_PRINT=true: generates PDF and POSTs to /api/print/silent (no browser dialog).
   // SILENT_PRINT=false: downloads PDF if PDF_ENABLE, then calls window.print().
+  //
+  // IMPORTANT: setActivePrintBatch([]) is NOT in a finally block. For window.print() paths we
+  // delay clearing so the portal DOM stays alive long enough for the browser to capture it for
+  // the print preview. Clearing immediately (in finally) was causing blank print previews.
   useEffect(() => {
     if (activePrintBatch.length > 0) {
       const timer = setTimeout(async () => {
+        const clearAfter = (ms: number) => setTimeout(() => setActivePrintBatch([]), ms);
+
         try {
           if (SILENT_PRINT && pdfContainerRef.current) {
             const blob = await generateLabelsPdfBlob(pdfContainerRef.current);
@@ -182,20 +189,21 @@ export function ShipmentBarcodeForm() {
               body: JSON.stringify({ pdf_base64 }),
             });
             if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Silent print failed');
+            setActivePrintBatch([]); // success: clear immediately, no dialog to feed
           } else {
             if (PDF_ENABLE && pdfContainerRef.current) {
               const date = new Date().toISOString().slice(0, 10);
               await downloadLabelsPdf(pdfContainerRef.current, `Shipment_Labels_${activeMode}_${date}.pdf`);
             }
             window.print();
+            clearAfter(800); // keep portal in DOM until browser has captured it
           }
         } catch (err) {
-          console.error('[Print] Failed, falling back to window.print():', err);
+          console.error('[Print] Silent print failed, falling back to window.print():', err);
           window.print();
-        } finally {
-          setActivePrintBatch([]);
+          clearAfter(800); // same delay for fallback path
         }
-      }, 350);
+      }, 500); // 500ms: gives JsBarcode's useEffect time to render SVG after mount
 
       return () => clearTimeout(timer);
     }
@@ -319,8 +327,12 @@ export function ShipmentBarcodeForm() {
         // Let's determine if this scan exceeds the remaining expected capacity (ordered_qty - fulfilled_qty)
         const targetItem = shipmentItems.find(item => item.sku.toLowerCase() === product.sku.toLowerCase());
         const orderedCapacity = targetItem ? targetItem.cu_ordered_qty : 0;
-        const fulfilledQty = targetItem ? (targetItem.fulfilled_qty || 0) : 0;
-        const remainingCapacity = Math.max(0, orderedCapacity - fulfilledQty);
+        // fulfilled_qty now includes this session's scans; subtract session_qty (as of page load)
+        // to get the pre-session baseline for capacity calculation.
+        const priorFulfilled = targetItem
+          ? Math.max(0, (targetItem.fulfilled_qty || 0) - (targetItem.session_qty || 0))
+          : 0;
+        const remainingCapacity = Math.max(0, orderedCapacity - priorFulfilled);
 
         const currentCount = countingQty[product.sku] || 0;
         const nextCount = currentCount + 1;
@@ -1127,8 +1139,10 @@ export function ShipmentBarcodeForm() {
                   <tbody className="divide-y divide-slate-850/60 text-xs">
                     {filteredItems.map((item) => {
                       const counted = countingQty[item.sku] || 0;
-                      const remaining = Math.max(0, item.cu_ordered_qty - (item.fulfilled_qty || 0) - counted);
-                      
+                      // fulfilled_qty includes this session; remove session_qty (at load) for prior baseline
+                      const priorFulfilled = Math.max(0, (item.fulfilled_qty || 0) - (item.session_qty || 0));
+                      const remaining = Math.max(0, item.cu_ordered_qty - priorFulfilled - counted);
+
                       let statusNode = (
                         <span className="bg-slate-950 border border-slate-850 text-slate-500 px-2 py-0.5 rounded text-[9.5px] font-bold uppercase tracking-wider">
                           Pending
@@ -1136,7 +1150,7 @@ export function ShipmentBarcodeForm() {
                       );
 
                       if (counted > 0) {
-                        if (counted === Math.max(0, item.cu_ordered_qty - (item.fulfilled_qty || 0))) {
+                        if (counted === Math.max(0, item.cu_ordered_qty - priorFulfilled)) {
                           statusNode = (
                             <span className="bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 px-2 py-0.5 rounded text-[9.5px] font-bold uppercase tracking-wider">
                               Completed
@@ -1165,8 +1179,8 @@ export function ShipmentBarcodeForm() {
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono text-slate-400 font-semibold text-xs">
                             <div>{item.cu_ordered_qty}</div>
-                            {(item.fulfilled_qty || 0) > 0 && (
-                              <div className="text-[10px] text-slate-500 font-normal">Prior Fulfilled: {item.fulfilled_qty}</div>
+                            {priorFulfilled > 0 && (
+                              <div className="text-[10px] text-slate-500 font-normal">Prior Fulfilled: {priorFulfilled}</div>
                             )}
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono font-bold text-white">{counted}</td>

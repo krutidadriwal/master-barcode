@@ -228,19 +228,16 @@ export class SupabaseProductRepository {
     }
 
     const cleanQuery = query.toLowerCase();
-    let match = this.mockProducts.find(p => p.ean_upc.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-    match = this.mockProducts.find(p => p.sku.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-    match = this.mockProducts.find(p => p.product_id.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-    match = this.mockProducts.find(p => p.custom_ean?.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-    match = this.mockProducts.find(p => p.article_number?.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-    match = this.mockProducts.find(p => p.model_no?.toLowerCase() === cleanQuery);
-    if (match) return this.fillSiblingEan(match);
-    return null;
+    const mockMatch =
+      this.mockProducts.find(p => p.ean_upc.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.sku.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.product_id.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.custom_ean?.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.article_number?.toLowerCase() === cleanQuery) ||
+      this.mockProducts.find(p => p.model_no?.toLowerCase() === cleanQuery);
+
+    if (!mockMatch) return null;
+    return this.fillSiblingEan(mockMatch);
   }
 
   async addProduct(product: Omit<Product, 'product_id'>): Promise<Product> {
