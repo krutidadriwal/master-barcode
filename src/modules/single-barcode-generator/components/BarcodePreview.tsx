@@ -95,7 +95,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
       style={{
         width: '50mm',
         height: '30mm',
-        padding: '0.5mm 2.5mm 0 2.5mm',
+        padding: '2mm 2.5mm 0 2.5mm',
         boxSizing: 'border-box',
         transform: `scale(${scale})`,
         marginBottom: scale !== 1.0 ? `${-30 * (1 - scale)}mm` : '0',
@@ -108,11 +108,11 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         style={{
           display: 'grid',
           gridTemplateColumns: '13mm 2mm 1fr',
-          rowGap: '0.4mm',
+          rowGap: '0.5mm',
           columnGap: '0px',
           fontFamily: "'Rubik-Light', 'Rubik', sans-serif",
-          fontSize: '6px',
-          fontWeight: 'normal',
+          fontSize: '7px',
+          fontWeight: 700,
           color: '#000000',
           backgroundColor: '#FFFFFF',
           lineHeight: '1',
@@ -121,32 +121,32 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         }}
       >
         {/* Row 1: Item */}
-        <div style={{ fontWeight: 600 }}>Item</div>
+        <div style={{ fontWeight: 700 }}>Item</div>
         <div>:</div>
-        <div style={{ wordBreak: 'break-word', whiteSpace: 'normal', fontWeight: 500, paddingRight: '0.5mm' }}>
+        <div style={{ wordBreak: 'break-word', whiteSpace: 'normal', fontWeight: 700, paddingRight: '0.5mm' }}>
           {product.item_name}
         </div>
 
         {/* Row 2: Item No */}
-        <div style={{ fontWeight: 600 }}>Item No</div>
+        <div style={{ fontWeight: 700 }}>Item No</div>
         <div>:</div>
-        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>
+        <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
           {product.sku || '990011'}
         </div>
 
         {/* Row 3: MRP */}
-        <div style={{ fontWeight: 600 }}>MRP</div>
+        <div style={{ fontWeight: 700 }}>MRP</div>
         <div>:</div>
-        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>
-          {formatMrp(product.mrp)}
+        <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+          {formatMrp(product.mrp)}<span style={{ fontSize: '5.5px', fontWeight: 600 }}> (Incl. of all taxes)</span>
         </div>
 
         {/* Row 4: Batch No — prop overrides product field */}
         {(batchNo ?? product.batch_no)?.trim() && (
           <>
-            <div style={{ fontWeight: 600 }}>Batch No</div>
+            <div style={{ fontWeight: 700 }}>Batch No</div>
             <div>:</div>
-            <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>
+            <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
               {(batchNo ?? product.batch_no)!.trim()}
             </div>
           </>
@@ -158,7 +158,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         style={{
           position: 'absolute',
           right: '2.5mm',
-          bottom: '4mm',
+          bottom: '2mm',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -176,7 +176,8 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         <div 
           style={{
             fontFamily: "'OCRB', monospace",
-            fontSize: '7px',
+            fontSize: '11px',
+            fontWeight: 700,
             color: '#000000',
             textAlign: 'center',
             marginTop: '0.4mm',
@@ -194,9 +195,9 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         style={{
           position: 'absolute',
           left: '2.5mm',
-          bottom: '4mm',
+          bottom: '2mm',
           fontFamily: "'Rubik-Light', 'Rubik', sans-serif",
-          fontSize: '6px',
+          fontSize: '7px',
           fontWeight: 'bold',
           color: '#000000',
           textDecoration: 'none',
