@@ -1,11 +1,23 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 import { createServer as createViteServer } from 'vite';
 import { SupabaseProductRepository } from './api/_lib/SupabaseProductRepository';
 import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepository';
 import { ProductionOrderRepository } from './api/_lib/ProductionOrderRepository';
 import { ProductionOrderSyncService } from './api/_lib/ProductionOrderSyncService';
+
+// Lazy-load pdf-to-printer so the server still starts if it's not installed
+let silentPrint: ((path: string) => Promise<void>) | null = null;
+try {
+  const m = await import('pdf-to-printer');
+  silentPrint = m.print;
+  console.log('[BFF Server] pdf-to-printer loaded — silent print endpoint active.');
+} catch {
+  console.warn('[BFF Server] pdf-to-printer not found — /api/print/silent will return 503.');
+}
 
 async function startServer() {
   const app = express();
@@ -21,8 +33,35 @@ async function startServer() {
   const productionOrderSyncService = new ProductionOrderSyncService();
 
   // BFF API Routes
-  app.get('/api/health', (req, res) => {
+  app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  /**
+   * Silent print endpoint — receives a base64-encoded PDF and sends it directly
+   * to the OS default printer via pdf-to-printer (bypasses browser print dialog).
+   * Only functional on the local Express server; not deployed to Vercel.
+   */
+  app.post('/api/print/silent', async (req, res) => {
+    if (!silentPrint) {
+      return res.status(503).json({ error: 'pdf-to-printer not available on this server.' });
+    }
+    const { pdf_base64 } = req.body;
+    if (!pdf_base64) {
+      return res.status(400).json({ error: 'pdf_base64 is required.' });
+    }
+    const tmpPath = path.join(os.tmpdir(), `label_${Date.now()}.pdf`);
+    try {
+      fs.writeFileSync(tmpPath, Buffer.from(pdf_base64, 'base64'));
+      await silentPrint(tmpPath);
+      console.log(`[BFF Silent Print] Sent label PDF to default printer.`);
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[BFF Silent Print] Failed:', err);
+      return res.status(500).json({ error: err.message || 'Silent print failed.' });
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
   });
 
   /**
@@ -54,7 +93,7 @@ async function startServer() {
   /**
    * Get all products (helpful for user cheat-sheet/dropdown inside sandbox)
    */
-  app.get('/api/barcode/products', async (req, res) => {
+  app.get('/api/barcode/products', async (_req, res) => {
     try {
       const products = await repository.getAllProducts();
       return res.json(products);
@@ -332,7 +371,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
     console.log('[BFF Server] Serving production compiled assets from:', distPath);

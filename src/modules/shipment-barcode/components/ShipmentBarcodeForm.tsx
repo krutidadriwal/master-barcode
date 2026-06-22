@@ -21,9 +21,19 @@ import {
 import { Product } from '../../../shared/types';
 import { BarcodePreview } from '../../single-barcode-generator/components/BarcodePreview';
 import { generateShipmentBatchNo } from '../../../shared/utilities/batchNo';
-import { downloadLabelsPdf } from '../../../shared/utilities/pdfExport';
+import { downloadLabelsPdf, generateLabelsPdfBlob } from '../../../shared/utilities/pdfExport';
 
 const PDF_ENABLE = import.meta.env.VITE_PDF_ENABLE === 'true';
+const SILENT_PRINT = import.meta.env.VITE_SILENT_PRINT === 'true';
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 interface ShipmentItem {
   sku: string;
@@ -150,22 +160,32 @@ export function ShipmentBarcodeForm() {
     return () => clearInterval(interval);
   }, [locked, scanMode]);
 
-  // Handle automatic printing (and PDF export when enabled) when an active print batch is populated
+  // Handle automatic printing when an active print batch is populated.
+  // SILENT_PRINT=true: generates PDF and POSTs to /api/print/silent (no browser dialog).
+  // SILENT_PRINT=false: downloads PDF if PDF_ENABLE, then calls window.print().
   useEffect(() => {
     if (activePrintBatch.length > 0) {
       const timer = setTimeout(async () => {
-        if (PDF_ENABLE && pdfContainerRef.current) {
-          try {
-            const date = new Date().toISOString().slice(0, 10);
-            await downloadLabelsPdf(pdfContainerRef.current, `Shipment_Labels_${activeMode}_${date}.pdf`);
-          } catch (err) {
-            console.error('[PDF Export] Failed:', err);
-          }
-        }
         try {
-          window.print();
+          if (SILENT_PRINT && pdfContainerRef.current) {
+            const blob = await generateLabelsPdfBlob(pdfContainerRef.current);
+            const pdf_base64 = await blobToBase64(blob);
+            const res = await fetch('/api/print/silent', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pdf_base64 }),
+            });
+            if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Silent print failed');
+          } else {
+            if (PDF_ENABLE && pdfContainerRef.current) {
+              const date = new Date().toISOString().slice(0, 10);
+              await downloadLabelsPdf(pdfContainerRef.current, `Shipment_Labels_${activeMode}_${date}.pdf`);
+            }
+            window.print();
+          }
         } catch (err) {
-          console.error('[Printer Interface] Failed to evoke browser physical print command:', err);
+          console.error('[Print] Failed, falling back to window.print():', err);
+          window.print();
         } finally {
           setActivePrintBatch([]);
         }
@@ -1463,8 +1483,9 @@ export function ShipmentBarcodeForm() {
       </>
       )}
 
-      {/* PDF CAPTURE: Off-screen container for html2canvas — visible but outside viewport */}
-      {PDF_ENABLE && activePrintBatch.length > 0 && (
+      {/* PDF CAPTURE: Off-screen container for html2canvas.
+          Rendered whenever silent print or PDF download is needed. */}
+      {(SILENT_PRINT || PDF_ENABLE) && activePrintBatch.length > 0 && (
         <div
           ref={pdfContainerRef}
           style={{ position: 'fixed', left: '-9999px', top: 0, background: '#fff', pointerEvents: 'none' }}
@@ -1478,8 +1499,8 @@ export function ShipmentBarcodeForm() {
         </div>
       )}
 
-      {/* DOCUMENT PRINT PORTAL: Multi-layout sheet rendering */}
-      {activePrintBatch.length > 0 && typeof document !== 'undefined' && createPortal(
+      {/* DOCUMENT PRINT PORTAL: only needed when NOT using silent print */}
+      {!SILENT_PRINT && activePrintBatch.length > 0 && typeof document !== 'undefined' && createPortal(
         <div id="print-only-area" style={{ backgroundColor: '#ffffff' }}>
           {activePrintBatch.map((job, idx) => (
             <div key={idx} className="print-label-item">

@@ -76,6 +76,8 @@ export class SupabaseProductRepository {
             ean_upc VARCHAR(100) NOT NULL
           );
           ALTER TABLE products ADD COLUMN IF NOT EXISTS batch_no VARCHAR(100);
+          ALTER TABLE products ADD COLUMN IF NOT EXISTS article_number VARCHAR(100);
+          ALTER TABLE products ADD COLUMN IF NOT EXISTS model_no VARCHAR(100);
         `);
       } finally {
         client.release();
@@ -179,11 +181,13 @@ export class SupabaseProductRepository {
       try {
         await this.ensurePgTable();
         const res = await this.pgPool.query(
-          `SELECT product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no
+          `SELECT product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no, article_number, model_no
            FROM products
            WHERE LOWER(ean_upc) = LOWER($1)
               OR LOWER(sku) = LOWER($1)
               OR LOWER(product_id) = LOWER($1)
+              OR LOWER(COALESCE(article_number, '')) = LOWER($1)
+              OR LOWER(COALESCE(model_no, '')) = LOWER($1)
            LIMIT 1`,
           [query]
         );
@@ -197,7 +201,9 @@ export class SupabaseProductRepository {
             mrp: res.rows[0].mrp || '',
             ean_upc: res.rows[0].ean_upc || '',
             custom_ean: res.rows[0].custom_ean || undefined,
-            batch_no: res.rows[0].batch_no || undefined
+            batch_no: res.rows[0].batch_no || undefined,
+            article_number: res.rows[0].article_number || undefined,
+            model_no: res.rows[0].model_no || undefined,
           });
         }
       } catch (err) {
@@ -210,8 +216,8 @@ export class SupabaseProductRepository {
       try {
         const { data, error } = await this.supabaseClient
           .from('products')
-          .select('product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no')
-          .or(`ean_upc.eq."${query}",sku.eq."${query}",product_id.eq."${query}"`)
+          .select('product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no, article_number, model_no')
+          .or(`ean_upc.eq."${query}",sku.eq."${query}",product_id.eq."${query}",article_number.eq."${query}",model_no.eq."${query}"`)
           .maybeSingle();
 
         if (error) {
@@ -225,7 +231,9 @@ export class SupabaseProductRepository {
             mrp: data.mrp || '',
             ean_upc: data.ean_upc || '',
             custom_ean: data.custom_ean || undefined,
-            batch_no: data.batch_no || undefined
+            batch_no: data.batch_no || undefined,
+            article_number: data.article_number || undefined,
+            model_no: data.model_no || undefined,
           });
         }
       } catch (err) {
@@ -246,6 +254,14 @@ export class SupabaseProductRepository {
 
     // 3. Search product_id
     match = this.mockProducts.find(p => p.product_id.toLowerCase() === cleanQuery);
+    if (match) return this.fillSiblingEan(match);
+
+    // 4. Search article_number
+    match = this.mockProducts.find(p => p.article_number?.toLowerCase() === cleanQuery);
+    if (match) return this.fillSiblingEan(match);
+
+    // 5. Search model_no
+    match = this.mockProducts.find(p => p.model_no?.toLowerCase() === cleanQuery);
     if (match) return this.fillSiblingEan(match);
 
     return null;
@@ -324,7 +340,7 @@ export class SupabaseProductRepository {
       try {
         await this.ensurePgTable();
         const res = await this.pgPool.query(
-          `SELECT product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no
+          `SELECT product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no, article_number, model_no
            FROM products
            ORDER BY item_name ASC`
         );
@@ -337,7 +353,9 @@ export class SupabaseProductRepository {
             mrp: row.mrp || '',
             ean_upc: row.ean_upc || '',
             custom_ean: row.custom_ean || undefined,
-            batch_no: row.batch_no || undefined
+            batch_no: row.batch_no || undefined,
+            article_number: row.article_number || undefined,
+            model_no: row.model_no || undefined,
           }));
         }
       } catch (err) {
@@ -350,7 +368,7 @@ export class SupabaseProductRepository {
       try {
         const { data, error } = await this.supabaseClient
           .from('products')
-          .select('product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no')
+          .select('product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no, article_number, model_no')
           .order('item_name', { ascending: true });
 
         if (error) {

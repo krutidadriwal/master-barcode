@@ -6,6 +6,8 @@ export interface Product {
   ean_upc: string;
   custom_ean?: string;
   batch_no?: string;
+  article_number?: string;
+  model_no?: string;
 }
 
 export interface ProductionOrderRow {

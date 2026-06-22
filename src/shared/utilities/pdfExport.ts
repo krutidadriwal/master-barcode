@@ -44,3 +44,40 @@ export async function downloadLabelsPdf(container: HTMLElement, filename: string
 
   pdf.save(filename);
 }
+
+/**
+ * Same capture logic as downloadLabelsPdf but returns a Blob
+ * instead of triggering a browser download. Used for server-side silent printing.
+ */
+export async function generateLabelsPdfBlob(container: HTMLElement): Promise<Blob> {
+  const items = Array.from(container.querySelectorAll<HTMLElement>('.print-label-item'));
+  if (!items.length) throw new Error('No label items found in container.');
+
+  const pdf = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: [LABEL_W_MM, LABEL_H_MM]
+  });
+
+  for (let i = 0; i < items.length; i++) {
+    const canvas = await html2canvas(items[i], {
+      scale: 4,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+      onclone: (clonedDoc) => {
+        clonedDoc.querySelectorAll('style').forEach(style => {
+          if (style.textContent?.includes('oklch')) {
+            style.textContent = style.textContent.replace(/oklch\([^)]+\)/g, 'transparent');
+          }
+        });
+        clonedDoc.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]').forEach(l => l.remove());
+      }
+    });
+
+    if (i > 0) pdf.addPage([LABEL_W_MM, LABEL_H_MM], 'landscape');
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, LABEL_W_MM, LABEL_H_MM);
+  }
+
+  return pdf.output('blob');
+}
