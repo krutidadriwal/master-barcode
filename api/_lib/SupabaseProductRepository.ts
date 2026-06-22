@@ -170,6 +170,7 @@ export class SupabaseProductRepository {
           `SELECT product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no, article_number, model_no
            FROM products
            WHERE LOWER(ean_upc) = LOWER($1)
+              OR LOWER(COALESCE(custom_ean, '')) = LOWER($1)
               OR LOWER(sku) = LOWER($1)
               OR LOWER(product_id) = LOWER($1)
               OR LOWER(COALESCE(article_number, '')) = LOWER($1)
@@ -202,7 +203,7 @@ export class SupabaseProductRepository {
         const { data, error } = await this.supabaseClient
           .from('products')
           .select('product_id, sku, item_name, mrp, ean_upc, custom_ean, batch_no, article_number, model_no')
-          .or(`ean_upc.eq."${query}",sku.eq."${query}",product_id.eq."${query}",article_number.eq."${query}",model_no.eq."${query}"`)
+          .or(`ean_upc.eq."${query}",custom_ean.eq."${query}",sku.eq."${query}",product_id.eq."${query}",article_number.eq."${query}",model_no.eq."${query}"`)
           .maybeSingle();
 
         if (error) {
@@ -232,6 +233,8 @@ export class SupabaseProductRepository {
     match = this.mockProducts.find(p => p.sku.toLowerCase() === cleanQuery);
     if (match) return this.fillSiblingEan(match);
     match = this.mockProducts.find(p => p.product_id.toLowerCase() === cleanQuery);
+    if (match) return this.fillSiblingEan(match);
+    match = this.mockProducts.find(p => p.custom_ean?.toLowerCase() === cleanQuery);
     if (match) return this.fillSiblingEan(match);
     match = this.mockProducts.find(p => p.article_number?.toLowerCase() === cleanQuery);
     if (match) return this.fillSiblingEan(match);

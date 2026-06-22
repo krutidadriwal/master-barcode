@@ -1499,8 +1499,8 @@ export function ShipmentBarcodeForm() {
         </div>
       )}
 
-      {/* DOCUMENT PRINT PORTAL: only needed when NOT using silent print */}
-      {!SILENT_PRINT && activePrintBatch.length > 0 && typeof document !== 'undefined' && createPortal(
+      {/* DOCUMENT PRINT PORTAL: always rendered so window.print() fallback shows labels correctly */}
+      {activePrintBatch.length > 0 && typeof document !== 'undefined' && createPortal(
         <div id="print-only-area" style={{ backgroundColor: '#ffffff' }}>
           {activePrintBatch.map((job, idx) => (
             <div key={idx} className="print-label-item">

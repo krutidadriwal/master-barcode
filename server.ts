@@ -9,22 +9,21 @@ import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepositor
 import { ProductionOrderRepository } from './api/_lib/ProductionOrderRepository';
 import { ProductionOrderSyncService } from './api/_lib/ProductionOrderSyncService';
 
-// Lazy-load pdf-to-printer so the server still starts if it's not installed
-let silentPrint: ((path: string) => Promise<void>) | null = null;
-try {
-  const m = await import('pdf-to-printer');
-  silentPrint = m.print;
-  console.log('[BFF Server] pdf-to-printer loaded — silent print endpoint active.');
-} catch {
-  console.warn('[BFF Server] pdf-to-printer not found — /api/print/silent will return 503.');
-}
-
 async function startServer() {
+  // Lazy-load pdf-to-printer inside the async function to avoid top-level-await issues with tsx
+  let silentPrint: ((filePath: string) => Promise<void>) | null = null;
+  try {
+    const m = await import('pdf-to-printer');
+    silentPrint = m.print;
+    console.log('[BFF Server] pdf-to-printer loaded — silent print endpoint active.');
+  } catch {
+    console.warn('[BFF Server] pdf-to-printer not available — /api/print/silent will return 503.');
+  }
   const app = express();
   const PORT = 3000;
 
-  // Body parser
-  app.use(express.json());
+  // Body parser — 10mb limit for base64 PDF payloads from the silent print endpoint
+  app.use(express.json({ limit: '10mb' }));
 
   // Initialize repositories
   const repository = new SupabaseProductRepository();
