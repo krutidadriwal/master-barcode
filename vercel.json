@@ -2,6 +2,9 @@
   "buildCommand": "vite build",
   "outputDirectory": "dist",
   "routes": [
+    { "src": "/api/barcode/([^/?]+)(.*)", "dest": "/api/barcode?action=$1" },
+    { "src": "/api/shipment/([^/?]+)(.*)", "dest": "/api/shipment?action=$1" },
+    { "src": "/api/production-order/([^/?]+)(.*)", "dest": "/api/production-order?action=$1" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]

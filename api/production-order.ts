@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ProductionOrderRepository } from '../_lib/ProductionOrderRepository.js';
-import { ProductionOrderSyncService } from '../_lib/ProductionOrderSyncService.js';
+import { ProductionOrderRepository } from './_lib/ProductionOrderRepository.js';
+import { ProductionOrderSyncService } from './_lib/ProductionOrderSyncService.js';
 
 const repository = new ProductionOrderRepository();
 

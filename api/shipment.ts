@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { SupabaseProductRepository } from '../_lib/SupabaseProductRepository.js';
-import { SupabaseShipmentRepository } from '../_lib/SupabaseShipmentRepository.js';
-import { SupabasePurchaseOrderRepository } from '../_lib/SupabasePurchaseOrderRepository.js';
+import { SupabaseProductRepository } from './_lib/SupabaseProductRepository.js';
+import { SupabaseShipmentRepository } from './_lib/SupabaseShipmentRepository.js';
+import { SupabasePurchaseOrderRepository } from './_lib/SupabasePurchaseOrderRepository.js';
 
 const repository = new SupabaseProductRepository();
 const shipmentRepository = new SupabaseShipmentRepository();
@@ -63,18 +63,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!Array.isArray(rawData)) throw new Error('Apps Script response is not a JSON array.');
       } else {
         const allProducts = await repository.getAllProducts();
-        rawData = allProducts.slice(0, 4).map((p, index) => {
-          const ordered = (index + 2) * 15;
-          const fulfilled = (index + 1) * 6;
-          return { sku: p.sku, sku_name: p.product_name, ordered_qty: ordered, fulfilled_qty: fulfilled };
-        });
+        rawData = allProducts.slice(0, 4).map((p, index) => ({
+          sku: p.sku, sku_name: p.product_name,
+          ordered_qty: (index + 2) * 15, fulfilled_qty: (index + 1) * 6,
+        }));
       }
       const aggregated: Record<string, { sku: string; planned_mode: 'AIR' | 'SEA'; sku_name: string; ordered_qty: number; fulfilled_qty: number; product_id?: string }> = {};
       for (const row of rawData) {
         const sku = (row.sku || '').toString().trim();
         if (!sku) continue;
-        const rawMode = (row.planned_mode || 'AIR').toString().trim().toUpperCase();
-        const planned_mode: 'AIR' | 'SEA' = rawMode === 'SEA' ? 'SEA' : 'AIR';
+        const planned_mode: 'AIR' | 'SEA' = (row.planned_mode || 'AIR').toString().trim().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
         const key = `${sku}|${planned_mode}`;
         const ordered = parseInt(row.ordered_qty, 10) || 0;
         const fulfilled = parseInt(row.fulfilled_qty, 10) || 0;
@@ -89,8 +87,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const products = await repository.getAllProducts();
       for (const key in aggregated) {
-        const { sku } = aggregated[key];
-        const match = products.find(p => p.sku && p.sku.toLowerCase() === sku.toLowerCase());
+        const match = products.find(p => p.sku && p.sku.toLowerCase() === aggregated[key].sku.toLowerCase());
         if (match) aggregated[key].product_id = match.product_id;
       }
       const itemsToUpsert = Object.values(aggregated).map(item => ({
@@ -174,9 +171,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })).filter((l: any) => l.po_ref_num && l.sku);
 
       console.log(`[PO Sync] After mapping+filter — headers: ${headers.length}, lines: ${lines.length}`);
-      if (headers.length === 0) console.warn('[PO Sync] WARNING: 0 headers. Check po_id/po_ref_num columns.');
-      if (lines.length === 0)   console.warn('[PO Sync] WARNING: 0 lines. Check sku/po_ref_num columns.');
-
       const headerResult = await poRepository.upsertPOHeaders(headers);
       const linesResult  = await poRepository.upsertPOLines(lines);
       return res.json({
