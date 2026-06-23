@@ -36,17 +36,38 @@ async function updateMatch(id: number, userSku: string, rowSku: string): Promise
   return data.code_match as boolean;
 }
 
-async function fetchProductBySku(sku: string): Promise<Product> {
+async function searchExact(identifier: string): Promise<Product | null> {
   const res = await fetch('/api/barcode/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier: sku }),
+    body: JSON.stringify({ identifier }),
   });
+  if (res.status === 404) return null;
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `SKU "${sku}" not found in products table.`);
+    throw new Error(err.error || `Server error searching "${identifier}".`);
   }
   return res.json();
+}
+
+// Strip trailing non-numeric suffix: "1030488R" → "1030488", "ABC-RED" → "ABC"
+function stripSkuSuffix(sku: string): string {
+  return sku.replace(/[^0-9]+$/i, '');
+}
+
+async function fetchProductBySku(sku: string): Promise<Product> {
+  // Primary: exact match
+  const primary = await searchExact(sku);
+  if (primary) return primary;
+
+  // Secondary: strip trailing alpha suffix and retry (e.g. "1030488R" → "1030488")
+  const base = stripSkuSuffix(sku);
+  if (base && base !== sku) {
+    const secondary = await searchExact(base);
+    if (secondary) return secondary;
+  }
+
+  throw new Error(`SKU "${sku}" not found in EasyEcomProductMaster (tried base "${base || sku}").`);
 }
 
 // ---------- Component ----------
