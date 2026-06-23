@@ -1,10 +1,27 @@
 import { useState } from 'react';
 import { REGISTERED_MODULES } from './ModuleRegistry';
-import { Layers, HelpCircle, HardDrive, ShieldCheck, Heart } from 'lucide-react';
+import { Layers, HardDrive, ShieldCheck, Heart, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { ProductMasterSyncResult } from '../../shared/types';
+
+type SyncStatus = { status: 'idle' } | { status: 'loading' } | { status: 'success'; result: ProductMasterSyncResult } | { status: 'error'; error: string };
 
 export function DashboardLayout() {
   const [activeModuleId, setActiveModuleId] = useState<string>(REGISTERED_MODULES[0].id);
+  const [syncState, setSyncState] = useState<SyncStatus>({ status: 'idle' });
+
+  const handleSyncProductMaster = async () => {
+    if (syncState.status === 'loading') return;
+    setSyncState({ status: 'loading' });
+    try {
+      const res = await fetch('/api/product-master/sync', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sync failed.');
+      setSyncState({ status: 'success', result: { inserted: data.inserted, updated: data.updated, deleted: data.deleted, total: data.total } });
+    } catch (err: any) {
+      setSyncState({ status: 'error', error: err.message || 'Sync failed.' });
+    }
+  };
 
   // Auto load active state
   const activeModule = REGISTERED_MODULES.find(m => m.id === activeModuleId) || REGISTERED_MODULES[0];
@@ -29,16 +46,40 @@ export function DashboardLayout() {
             </div>
           </div>
 
-          {/* Core System Status */}
-          <div className="flex items-center gap-5 text-xs text-slate-400">
+          {/* Core System Status + Sync */}
+          <div className="flex items-center gap-3 text-xs text-slate-400">
             <div className="hidden md:flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full">
               <ShieldCheck className="h-4 w-4 text-emerald-400" />
-              <span>BFF Connection: <strong className="text-white">Active</strong></span>
+              <span>BFF: <strong className="text-white">Active</strong></span>
             </div>
             <div className="hidden sm:flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full">
               <HardDrive className="h-4 w-4 text-indigo-400" />
-              <span>Sandbox Inventory: <strong className="text-white">Seeded</strong></span>
+              <span>Product Master: <strong className="text-white">Local</strong></span>
             </div>
+
+            {/* Sync result status pill */}
+            {syncState.status === 'success' && (
+              <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 px-3 py-1 rounded-full text-[10px] font-semibold whitespace-nowrap">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                <span>+{syncState.result.inserted} / ~{syncState.result.updated} / -{syncState.result.deleted} / {syncState.result.total} total</span>
+              </div>
+            )}
+            {syncState.status === 'error' && (
+              <div className="flex items-center gap-1.5 bg-red-500/10 border border-red-500/25 text-red-400 px-3 py-1 rounded-full text-[10px] font-semibold whitespace-nowrap" title={syncState.error}>
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                <span>Sync Failed</span>
+              </div>
+            )}
+
+            {/* Sync button */}
+            <button
+              onClick={handleSyncProductMaster}
+              disabled={syncState.status === 'loading'}
+              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-3.5 py-1.5 rounded-xl text-[11px] transition cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${syncState.status === 'loading' ? 'animate-spin' : ''}`} />
+              {syncState.status === 'loading' ? 'Syncing…' : 'Sync Product Master'}
+            </button>
           </div>
 
         </div>

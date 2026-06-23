@@ -190,7 +190,7 @@ export function ProductionOrderBarcodeForm() {
   const printProduct = productData;
   const validEan = (v?: string) => { const s = v?.trim() ?? ''; return s !== '' && s !== '0' ? s : null; };
   const barcodeValue = productData
-    ? (validEan(productData.custom_ean) ?? validEan(productData.ean_upc) ?? productData.sku?.trim() ?? '—')
+    ? (validEan(productData.EANUPC) ?? productData.sku?.trim() ?? '—')
     : '—';
   const hasSearched = shortCode.trim().length >= 4 && !searchLoading;
 
@@ -327,11 +327,11 @@ export function ProductionOrderBarcodeForm() {
             )}
             {productData && (
               <div className="space-y-2 bg-slate-950/60 border border-slate-800/60 rounded-xl p-3">
-                <p className="text-[10px] uppercase tracking-widest text-emerald-500 font-bold">Product Data (from products table)</p>
+                <p className="text-[10px] uppercase tracking-widest text-emerald-500 font-bold">Product Data (from EasyEcomProductMaster)</p>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div>
-                    <span className="text-[10px] text-slate-500 block">Item Name</span>
-                    <span className="text-white leading-snug">{productData.item_name || '—'}</span>
+                    <span className="text-[10px] text-slate-500 block">Product Name</span>
+                    <span className="text-white leading-snug">{productData.product_name || '—'}</span>
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-500 block">MRP</span>
@@ -339,11 +339,11 @@ export function ProductionOrderBarcodeForm() {
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-500 block">EAN/UPC</span>
-                    <span className="font-mono text-white">{productData.ean_upc || '—'}</span>
+                    <span className="font-mono text-white">{productData.EANUPC || '—'}</span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-slate-500 block">Custom EAN</span>
-                    <span className="font-mono text-white">{productData.custom_ean || '—'}</span>
+                    <span className="text-[10px] text-slate-500 block">Brand</span>
+                    <span className="text-white">{productData.brand || '—'}</span>
                   </div>
                 </div>
               </div>

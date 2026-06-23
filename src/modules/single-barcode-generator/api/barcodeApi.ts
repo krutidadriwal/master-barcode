@@ -35,23 +35,4 @@ export class BarcodeApi {
     return response.json();
   }
 
-  /**
-   * Registers a custom product on-the-fly
-   */
-  static async registerProduct(productDetails: Omit<Product, 'product_id'>): Promise<Product> {
-    const response = await fetch('/api/barcode/add', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(productDetails)
-    });
-
-    if (!response.ok) {
-      const errRes = await response.json().catch(() => ({}));
-      throw new Error(errRes.error || 'Failed to append custom product to system memory.');
-    }
-
-    return response.json();
-  }
 }

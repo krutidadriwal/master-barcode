@@ -32,7 +32,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rawData = allProducts.slice(0, 4).map((p, index) => {
           const ordered = (index + 2) * 15;
           const fulfilled = (index + 1) * 6;
-          return { sku: p.sku, sku_name: p.item_name, ordered_qty: ordered, fulfilled_qty: fulfilled };
+          return { sku: p.sku, sku_name: p.product_name, ordered_qty: ordered, fulfilled_qty: fulfilled };
         });
       } else {
         rawData = [

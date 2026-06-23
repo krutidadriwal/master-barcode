@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, FormEvent } from 'react';
-import { Search, Printer, History, RefreshCw, CheckCircle2, AlertCircle, Database, Plus, Sparkles, BookOpen, FileDown } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Search, Printer, History, RefreshCw, CheckCircle2, AlertCircle, Database, Sparkles, BookOpen, FileDown } from 'lucide-react';
 import { Product, BarcodeCache } from '../../../shared/types';
 import { SingleBarcodeValidator } from '../validators';
 import { SINGLE_BARCODE_CONFIG } from '../config';
@@ -26,16 +26,6 @@ export function SingleBarcodeForm() {
   // Custom dialogs & dropdown toggles
   const [catalog, setCatalog] = useState<Product[]>([]);
   const [showCatalog, setShowCatalog] = useState<boolean>(false);
-  const [showAddModal, setShowAddModal] = useState<boolean>(false);
-
-  // New Custom Product state
-  const [newSku, setNewSku] = useState<string>('');
-  const [newItemName, setNewItemName] = useState<string>('');
-  const [newMrp, setNewMrp] = useState<string>('');
-  const [newEanUpc, setNewEanUpc] = useState<string>('');
-  const [newBatchNo, setNewBatchNo] = useState<string>('');
-  const [addSuccessInfo, setAddSuccessInfo] = useState<string | null>(null);
-
   // Track manual search to bypass automatic debouncing during button clicks
   const isSelectedOrManualAction = useRef<boolean>(false);
 
@@ -155,8 +145,8 @@ export function SingleBarcodeForm() {
 
   const handlePrint = () => {
     if (!product) return;
-    const barcodeValue = (product.ean_upc && product.ean_upc.trim() !== '')
-      ? product.ean_upc.trim()
+    const barcodeValue = (product.EANUPC && product.EANUPC.trim() !== '')
+      ? product.EANUPC.trim()
       : (product.sku && product.sku.trim() !== '' ? product.sku.trim() : '');
     
     if (!barcodeValue) {
@@ -186,51 +176,11 @@ export function SingleBarcodeForm() {
   // Quick select items from auxiliary list
   const selectCatalogProduct = (p: Product) => {
     isSelectedOrManualAction.current = true;
-    setIdentifier(p.sku || p.ean_upc);
+    setIdentifier(p.sku || p.EANUPC || '');
     setProduct(p);
     setError(null);
     setShowCatalog(false);
-    saveGenerationToCache(p, p.sku || p.ean_upc, quantity);
-  };
-
-  // Add Dynamic custom products
-  const handleCreateProduct = async (e: FormEvent) => {
-    e.preventDefault();
-    setAddSuccessInfo(null);
-    
-    if (!newSku.trim() || !newItemName.trim() || !newMrp.trim() || !newEanUpc.trim()) {
-      alert('Please fill out all standard fields.');
-      return;
-    }
-
-    try {
-      const created = await BarcodeApi.registerProduct({
-        sku: newSku.trim(),
-        item_name: newItemName.trim(),
-        mrp: newMrp.trim(),
-        ean_upc: newEanUpc.trim(),
-        batch_no: newBatchNo.trim() || undefined
-      });
-
-      setAddSuccessInfo(`Success! "${created.item_name}" registered in database.`);
-      setNewSku('');
-      setNewItemName('');
-      setNewMrp('');
-      setNewEanUpc('');
-      setNewBatchNo('');
-      
-      // Auto select the new item immediately
-      selectCatalogProduct(created);
-      refreshCatalogList();
-      
-      // Close modal after lag
-      setTimeout(() => {
-        setShowAddModal(false);
-        setAddSuccessInfo(null);
-      }, 1500);
-    } catch (err: any) {
-      alert(`Registration Failed: ${err.message}`);
-    }
+    saveGenerationToCache(p, p.sku || p.EANUPC || '', quantity);
   };
 
   return (
@@ -254,7 +204,7 @@ export function SingleBarcodeForm() {
               <button
                 onClick={triggerReprintRestore}
                 className="flex items-center gap-2 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 hover:text-indigo-300 border border-indigo-500/20 px-3.5 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition cursor-pointer"
-                title={`Last label: ${cachedGen.product.item_name}`}
+                title={`Last label: ${cachedGen.product.product_name}`}
               >
                 <History className="h-4 w-4" />
                 Reprint Last Barcode ({cachedGen.product.sku})
@@ -273,14 +223,6 @@ export function SingleBarcodeForm() {
               Database Cheat-sheet
             </button>
 
-            {/* Create product manually */}
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 px-3.5 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition cursor-pointer"
-            >
-              <Plus className="h-4 w-4" />
-              New Test Product
-            </button>
           </div>
         </div>
 
@@ -300,11 +242,11 @@ export function SingleBarcodeForm() {
               </button>
             </div>
             {catalog.length === 0 ? (
-              <p className="text-xs text-slate-500 py-2">Catalog empty. Click 'New Test Product' to register item metadata first.</p>
+              <p className="text-xs text-slate-500 py-2">Catalog empty. Use 'Sync Product Master' to populate products from EasyEcom.</p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 py-1 max-h-52 overflow-y-auto pr-1">
                 {catalog.map((p) => {
-                  const resolvedVal = (p.ean_upc && p.ean_upc.trim() !== '') ? p.ean_upc.trim() : (p.sku && p.sku.trim() !== '' ? p.sku.trim() : '');
+                  const resolvedVal = (p.EANUPC && p.EANUPC.trim() !== '') ? p.EANUPC.trim() : (p.sku && p.sku.trim() !== '' ? p.sku.trim() : '');
                   const formatType = BarcodeGeneratorService.detectFormat(resolvedVal);
                   return (
                     <div
@@ -312,7 +254,7 @@ export function SingleBarcodeForm() {
                       onClick={() => selectCatalogProduct(p)}
                       className="p-2.5 rounded-lg border border-slate-900 bg-slate-900/50 hover:bg-slate-850 hover:border-slate-700 cursor-pointer text-left transition duration-200 group flex flex-col justify-between"
                     >
-                      <div className="text-xs font-bold text-slate-200 group-hover:text-indigo-400 truncate mb-0.5">{p.item_name}</div>
+                      <div className="text-xs font-bold text-slate-200 group-hover:text-indigo-400 truncate mb-0.5">{p.product_name}</div>
                       <div className="flex justify-between items-center text-[10px] text-slate-500 font-mono mt-1">
                         <span>SKU: {p.sku}</span>
                         <span className="bg-slate-950 text-indigo-400 px-1 rounded border border-slate-800 text-[8px]">{formatType}</span>
@@ -430,7 +372,7 @@ export function SingleBarcodeForm() {
                 <div className="space-y-3">
                   <div>
                     <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block">Item Name</span>
-                    <span className="text-sm font-bold text-white block mt-0.5 leading-snug">{product.item_name}</span>
+                    <span className="text-sm font-bold text-white block mt-0.5 leading-snug">{product.product_name}</span>
                   </div>
                   
                   <div className="grid grid-cols-2 gap-4 pt-1">
@@ -440,7 +382,7 @@ export function SingleBarcodeForm() {
                     </div>
                     <div>
                       <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block">EAN/UPC Code</span>
-                      <span className="text-sm font-mono font-semibold text-white block mt-0.5">{product.ean_upc || '-'}</span>
+                      <span className="text-sm font-mono font-semibold text-white block mt-0.5">{product.EANUPC || '-'}</span>
                     </div>
                   </div>
 
@@ -453,7 +395,7 @@ export function SingleBarcodeForm() {
                       <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block">Auto Barcode Target</span>
                       <span className="text-xs bg-slate-950 font-bold text-indigo-400 border border-slate-800 px-2.5 py-1 rounded-md inline-block mt-1 uppercase tracking-wider font-mono">
                         {BarcodeGeneratorService.detectFormat(
-                          (product.ean_upc && product.ean_upc.trim() !== '') ? product.ean_upc.trim() : (product.sku && product.sku.trim() !== '' ? product.sku.trim() : '')
+                          (product.EANUPC && product.EANUPC.trim() !== '') ? product.EANUPC.trim() : (product.sku && product.sku.trim() !== '' ? product.sku.trim() : '')
                         )}
                       </span>
                     </div>
@@ -531,117 +473,6 @@ export function SingleBarcodeForm() {
           </div>
         </div>
       </div>
-
-      {/* MODAL 1: ADD UNIQUE CUSTOM PRODUCT */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <form 
-            onSubmit={handleCreateProduct} 
-            className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-md w-full p-6 text-slate-100 space-y-4"
-          >
-            <div className="flex justify-between items-center pb-2 border-b border-slate-850">
-              <h3 className="font-bold text-white text-md">Register New Test Product</h3>
-              <button 
-                type="button" 
-                onClick={() => setShowAddModal(false)}
-                className="text-slate-500 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
-
-            {addSuccessInfo ? (
-              <div className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 p-4 rounded-xl flex items-center gap-3 text-xs">
-                <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0" />
-                <span>{addSuccessInfo}</span>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Item SKU (Internal No)</label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={30}
-                    value={newSku}
-                    onChange={(e) => setNewSku(e.target.value)}
-                    placeholder="e.g. 990011, QY-VALK-3"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Item Display Name</label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={100}
-                    value={newItemName}
-                    onChange={(e) => setNewItemName(e.target.value)}
-                    placeholder="e.g. Cube Pouch and Stand Combo"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">MRP Display Value</label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={12}
-                    value={newMrp}
-                    onChange={(e) => setNewMrp(e.target.value)}
-                    placeholder="e.g. 199, -/-, Rs. 350/-"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">UPC/EAN Barcode Value</label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={30}
-                    value={newEanUpc}
-                    onChange={(e) => setNewEanUpc(e.target.value)}
-                    placeholder="For EAN-13 use 13 digits, for UPC-A use 12, otherwise fallback to Code 128"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Batch Number (Optional)</label>
-                  <input
-                    type="text"
-                    maxLength={30}
-                    value={newBatchNo}
-                    onChange={(e) => setNewBatchNo(e.target.value)}
-                    placeholder="e.g. B240615A, B2510"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowAddModal(false)}
-                className="w-1/2 bg-slate-800 hover:bg-slate-705 py-2 rounded-xl text-xs text-slate-300 font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={!!addSuccessInfo}
-                className="w-1/2 bg-indigo-600 hover:bg-indigo-550 disabled:opacity-50 py-2 rounded-xl text-xs text-white font-bold"
-              >
-                Add & Autofill
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
 
       {/* PDF CAPTURE: Off-screen container for html2canvas — visible but outside viewport */}
       {PDF_ENABLE && product && (

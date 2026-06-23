@@ -81,12 +81,11 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
 
   const validBarcode = (val?: string) => { const v = val?.trim() ?? ''; return v !== '' && v !== '0'; };
 
-  // Barcode priority: custom_ean → ean_upc → sku (skips empty or literal "0")
-  const barcodeValue = validBarcode(product.custom_ean)
-    ? product.custom_ean!.trim()
-    : validBarcode(product.ean_upc)
-      ? product.ean_upc.trim()
-      : (product.sku?.trim() || '990011');
+  // Barcode priority: EANUPC → sku numeric root (skips empty or literal "0")
+  const skuRoot = (product.sku?.trim() || '990011').replace(/[^0-9]+$/i, '') || product.sku?.trim() || '990011';
+  const barcodeValue = validBarcode(product.EANUPC)
+    ? product.EANUPC!.trim()
+    : skuRoot;
 
   // Detect format dynamically using shared services
   const autoFormat = BarcodeGeneratorService.detectFormat(barcodeValue);
@@ -112,7 +111,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
           gridTemplateColumns: '13mm 2mm 1fr',
           rowGap: '0.5mm',
           columnGap: '0px',
-          fontFamily: "'Rubik-Light', 'Rubik', sans-serif",
+          fontFamily: "'Rubik-Light', 'Rubik'",
           fontSize: '7px',
           fontWeight: 700,
           color: '#000000',
@@ -126,7 +125,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         <div style={{ fontWeight: 700 }}>Item</div>
         <div>:</div>
         <div style={{ wordBreak: 'break-word', whiteSpace: 'normal', fontWeight: 700, paddingRight: '0.5mm' }}>
-          {product.item_name}
+          {product.product_name}
         </div>
 
         {/* Row 2: Item No */}
@@ -143,13 +142,13 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
           {formatMrp(product.mrp)}<span style={{ fontSize: '5.5px', fontWeight: 600 }}> (Incl. of all taxes)</span>
         </div>
 
-        {/* Row 4: Batch No — prop overrides product field */}
-        {(batchNo ?? product.batch_no)?.trim() && (
+        {/* Row 4: Batch No — from prop only */}
+        {batchNo?.trim() && (
           <>
             <div style={{ fontWeight: 700 }}>Batch No</div>
             <div>:</div>
             <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
-              {(batchNo ?? product.batch_no)!.trim()}
+              {batchNo.trim()}
             </div>
           </>
         )}
@@ -177,7 +176,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         {/* Barcode OCR-B Value */}
         <div 
           style={{
-            fontFamily: "'OCRB', monospace",
+            fontFamily: "'OCRB'",
             fontSize: '11px',
             fontWeight: 700,
             color: '#000000',
@@ -198,7 +197,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
           position: 'absolute',
           left: '2.5mm',
           bottom: '2mm',
-          fontFamily: "'Rubik-Light', 'Rubik', sans-serif",
+          fontFamily: "'Rubik-Light', 'Rubik'",
           fontSize: '7px',
           fontWeight: 'bold',
           color: '#000000',

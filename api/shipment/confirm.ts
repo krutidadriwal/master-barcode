@@ -22,7 +22,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (typeof counted !== 'number' || counted <= 0) continue;
 
       const prod = allProducts.find(p => p.sku && p.sku.toLowerCase() === sku.toLowerCase());
-      const name = prod ? prod.item_name : `Unexpected SKU ${sku}`;
+      const name = prod ? prod.product_name : `Unexpected SKU ${sku}`;
       const prodId = prod ? prod.product_id : null;
 
       await shipmentRepository.incrementFulfilledQty(sku, name, prodId, counted, mode);

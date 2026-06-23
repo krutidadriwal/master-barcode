@@ -8,6 +8,8 @@ import { SupabaseProductRepository } from './api/_lib/SupabaseProductRepository'
 import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepository';
 import { ProductionOrderRepository } from './api/_lib/ProductionOrderRepository';
 import { ProductionOrderSyncService } from './api/_lib/ProductionOrderSyncService';
+import { EasyEcomProductMasterSyncService } from './api/_lib/EasyEcomProductMasterSyncService';
+import { SupabasePurchaseOrderRepository } from './api/_lib/SupabasePurchaseOrderRepository';
 
 async function startServer() {
   // Lazy-load pdf-to-printer inside the async function to avoid top-level-await issues with tsx
@@ -28,6 +30,7 @@ async function startServer() {
   // Initialize repositories
   const repository = new SupabaseProductRepository();
   const shipmentRepository = new SupabaseShipmentRepository();
+  const poRepository = new SupabasePurchaseOrderRepository();
   const productionOrderRepository = new ProductionOrderRepository();
   const productionOrderSyncService = new ProductionOrderSyncService();
 
@@ -102,21 +105,18 @@ async function startServer() {
   });
 
   /**
-   * Add a custom product dynamically for instant play/reprint tests
+   * Sync product master from central EasyEcomProductMaster database.
+   * Requires CENTRAL_DB_URL and DATABASE_URL to be configured.
    */
-  app.post('/api/barcode/add', async (req, res) => {
+  app.post('/api/product-master/sync', async (_req, res) => {
     try {
-      const { sku, item_name, mrp, ean_upc, batch_no } = req.body;
-
-      if (!sku || !item_name || !mrp || !ean_upc) {
-        return res.status(400).json({ error: 'sku, item_name, mrp, and ean_upc are all required.' });
-      }
-
-      const product = await repository.addProduct({ sku, item_name, mrp, ean_upc, batch_no });
-      return res.status(201).json(product);
-    } catch (error) {
-      console.error('[BFF API] Add product error:', error);
-      return res.status(500).json({ error: 'Failed to record custom product in repository.' });
+      const syncService = new EasyEcomProductMasterSyncService();
+      const result = await syncService.sync();
+      await syncService.close();
+      return res.json({ success: true, ...result });
+    } catch (err: any) {
+      console.error('[BFF Product Master Sync] Failed:', err);
+      return res.status(500).json({ error: err.message || 'Product master sync failed.' });
     }
   });
 
@@ -166,7 +166,7 @@ async function startServer() {
             const fulfilled = (index + 1) * 6; // 6, 12, 18, 24 (all less than ordered)
             return {
               sku: p.sku,
-              sku_name: p.item_name,
+              sku_name: p.product_name,
               ordered_qty: ordered,
               fulfilled_qty: fulfilled
             };
@@ -313,6 +313,127 @@ async function startServer() {
     }
   });
 
+  /**
+   * Sync Purchase Orders from Google Sheet (PO_SCRIPTS_URL) into local Supabase tables.
+   * Expects Apps Script to return { headers: [...], lines: [...] }.
+   * Pass { demo: true } in body to load seeded demo data instead.
+   */
+  app.post('/api/shipment/po-sync', async (req, res) => {
+    try {
+      const { demo } = req.body || {};
+      let headersRaw: any[] = [];
+      let linesRaw: any[] = [];
+
+      if (!demo) {
+        const scriptUrl = process.env.PO_SCRIPTS_URL;
+        if (!scriptUrl?.trim()) throw new Error('PO_SCRIPTS_URL is not set in environment.');
+        console.log('[PO Sync] Fetching Apps Script URL:', scriptUrl.slice(0, 60) + '...');
+        const response = await fetch(scriptUrl, { redirect: 'follow' });
+        console.log('[PO Sync] Apps Script HTTP status:', response.status, response.statusText);
+        const rawText = await response.text();
+        console.log('[PO Sync] Apps Script raw response (first 500 chars):', rawText.slice(0, 500));
+        if (!response.ok) throw new Error(`Apps Script responded with HTTP ${response.status}: ${rawText.slice(0, 200)}`);
+        let data: any;
+        try {
+          data = JSON.parse(rawText);
+        } catch (parseErr) {
+          throw new Error(`Apps Script response is not valid JSON. Got: ${rawText.slice(0, 200)}`);
+        }
+        if (data?.error) throw new Error(`Apps Script error: ${data.message || JSON.stringify(data)}`);
+        headersRaw = Array.isArray(data.headers) ? data.headers : [];
+        linesRaw   = Array.isArray(data.lines)   ? data.lines   : [];
+        console.log(`[PO Sync] Parsed from Apps Script — headers: ${headersRaw.length}, lines: ${linesRaw.length}`);
+      } else {
+        headersRaw = [
+          { po_id: 'PO-DEMO-001', po_ref_num: '24134-YJ',       vendor_name: 'Demo Vendor A', vendor_code: 'V001', po_status_id: '1', total_po_value: 15000, po_created_date: '2025-01-15', po_updated_date: '2025-01-20' },
+          { po_id: 'PO-DEMO-002', po_ref_num: 'VS-PW260515-1',  vendor_name: 'Demo Vendor B', vendor_code: 'V002', po_status_id: '1', total_po_value: 8500,  po_created_date: '2025-02-01', po_updated_date: '2025-02-05' },
+          { po_id: 'PO-DEMO-003', po_ref_num: '24119-PW',        vendor_name: 'Demo Vendor C', vendor_code: 'V003', po_status_id: '2', total_po_value: 22000, po_created_date: '2025-03-10', po_updated_date: '2025-03-12' },
+        ];
+        const allProducts = await repository.getAllProducts();
+        const sample = allProducts.slice(0, 9);
+        const refNums = ['24134-YJ', 'VS-PW260515-1', '24119-PW'];
+        const poIds   = ['PO-DEMO-001', 'PO-DEMO-002', 'PO-DEMO-003'];
+        linesRaw = sample.map((p, i) => ({
+          po_ref_num: refNums[Math.floor(i / 3)],
+          po_id:      poIds[Math.floor(i / 3)],
+          sku: p.sku,
+          original_quantity: (i % 3 + 2) * 10,
+          pending_quantity:  (i % 3 + 2) * 10,
+          item_price: 99.99,
+        }));
+      }
+
+      const headers = headersRaw.map((h: any) => ({
+        po_id:           String(h.po_id           || '').trim(),
+        po_ref_num:      String(h.po_ref_num      || '').trim(),
+        total_po_value:  h.total_po_value  != null ? parseFloat(h.total_po_value)  : undefined,
+        po_status_id:    h.po_status_id    != null ? String(h.po_status_id).trim()  : undefined,
+        po_created_date: h.po_created_date != null ? String(h.po_created_date).trim(): undefined,
+        po_updated_date: h.po_updated_date != null ? String(h.po_updated_date).trim(): undefined,
+        vendor_name:     h.vendor_name     != null ? String(h.vendor_name).trim()    : undefined,
+        vendor_code:     h.vendor_code     != null ? String(h.vendor_code).trim()    : undefined,
+      })).filter((h: any) => h.po_id && h.po_ref_num);
+
+      const lines = linesRaw.map((l: any) => ({
+        po_ref_num:        String(l.po_ref_num || '').trim(),
+        po_id:             l.po_id != null ? String(l.po_id).trim() : undefined,
+        sku:               String(l.sku || '').trim(),
+        original_quantity: parseInt(l.original_quantity, 10) || 0,
+        pending_quantity:  parseInt(l.pending_quantity  ?? l.original_quantity, 10) || 0,
+        item_price:        l.item_price != null ? parseFloat(l.item_price) : undefined,
+      })).filter((l: any) => l.po_ref_num && l.sku);
+
+      console.log(`[PO Sync] After mapping+filter — headers: ${headers.length}, lines: ${lines.length}`);
+      if (headers.length === 0) console.warn('[PO Sync] WARNING: 0 headers to upsert. Check po_id and po_ref_num columns in sheet.');
+      if (lines.length === 0)   console.warn('[PO Sync] WARNING: 0 lines to upsert. Check sku and po_ref_num columns in sheet.');
+      if (headers.length > 0)   console.log('[PO Sync] First header sample:', JSON.stringify(headers[0]));
+      if (lines.length > 0)     console.log('[PO Sync] First line sample:',   JSON.stringify(lines[0]));
+
+      const headerResult = await poRepository.upsertPOHeaders(headers);
+      console.log('[PO Sync] Headers upsert result:', headerResult);
+      const linesResult  = await poRepository.upsertPOLines(lines);
+      console.log('[PO Sync] Lines upsert result:', linesResult);
+
+      return res.json({
+        success: true,
+        headersInserted: headerResult.inserted,
+        headersUpdated:  headerResult.updated,
+        linesInserted:   linesResult.inserted,
+        linesUpdated:    linesResult.updated,
+      });
+    } catch (err: any) {
+      console.error('[PO Sync] FAILED:', err.message);
+      console.error('[PO Sync] Full error:', err);
+      return res.status(500).json({ error: err.message || 'Purchase order sync failed.' });
+    }
+  });
+
+  /**
+   * Return all PO lines for a given PO Ref Num.
+   */
+  app.get('/api/shipment/po-lines', async (req, res) => {
+    try {
+      const poRefNum = ((req.query.po_ref_num as string) || '').trim();
+      if (!poRefNum) return res.status(400).json({ error: 'po_ref_num query parameter is required.' });
+      const lines = await poRepository.getPOLinesByRefNum(poRefNum);
+      return res.json(lines);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch PO lines.' });
+    }
+  });
+
+  /**
+   * Return all distinct PO Ref Nums available locally (for the selector UI).
+   */
+  app.get('/api/shipment/po-ref-nums', async (_req, res) => {
+    try {
+      const refNums = await poRepository.getDistinctPORefNums();
+      return res.json(refNums);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch PO ref nums.' });
+    }
+  });
+
   app.get('/api/production-order/search', async (req, res) => {
     const code = (req.query.code || '').toString().trim();
     if (!code) return res.status(400).json({ error: 'code query parameter is required.' });
@@ -398,6 +519,21 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[BFF Server] Core system listening on http://localhost:${PORT}`);
   });
+
+  // Startup product master sync — fire-and-forget so server is never blocked
+  if (process.env.CENTRAL_DB_URL) {
+    (async () => {
+      try {
+        console.log('[BFF Server] Running startup product master sync...');
+        const syncService = new EasyEcomProductMasterSyncService();
+        const result = await syncService.sync();
+        await syncService.close();
+        console.log(`[BFF Server] Startup sync complete — Inserted: ${result.inserted}, Updated: ${result.updated}, Deleted: ${result.deleted}, Total: ${result.total}`);
+      } catch (err: any) {
+        console.warn('[BFF Server] Startup product master sync failed (continuing with existing local data):', err.message);
+      }
+    })();
+  }
 }
 
 startServer().catch((err) => {

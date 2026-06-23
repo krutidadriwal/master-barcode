@@ -1,14 +1,24 @@
 export interface Product {
+  id?: string;
   product_id: string;
   sku: string;
-  item_name: string;
+  product_name: string;
+  brand?: string;
+  brand_id?: string;
   mrp: string;
-  ean_upc: string;
-  custom_ean?: string;
-  batch_no?: string;
-  article_number?: string;
   model_no?: string;
+  EANUPC?: string;
+  accounting_sku?: string;
+  product_image_url?: string;
+  created_at?: string;
+  updated_at?: string;
+}
 
+export interface ProductMasterSyncResult {
+  inserted: number;
+  updated: number;
+  deleted: number;
+  total: number;
 }
 
 export interface ProductionOrderRow {
