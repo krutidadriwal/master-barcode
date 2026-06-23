@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Pool } from 'pg';
-import { ProductionOrderRow, SyncResult } from './types';
+import { ProductionOrderRow, SyncResult } from './types.js';
 
 const TABLE = 'production_order_barcode';
 

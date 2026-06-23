@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Pool } from 'pg';
-import { Product } from './types';
+import { Product } from './types.js';
 
 const TABLE = '"EasyEcomProductMaster"';
 

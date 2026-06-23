@@ -1,5 +1,5 @@
-import { ProductionOrderRow, SyncResult } from './types';
-import { ProductionOrderRepository } from './ProductionOrderRepository';
+import { ProductionOrderRow, SyncResult } from './types.js';
+import { ProductionOrderRepository } from './ProductionOrderRepository.js';
 
 interface EasyEcomTokenResponse {
   data?: { token?: string; jwt_token?: string };

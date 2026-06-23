@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { Product, ProductMasterSyncResult } from './types';
+import { Product, ProductMasterSyncResult } from './types.js';
 
 const LOCAL_TABLE = '"EasyEcomProductMaster"';
 const CHUNK_SIZE = 500;
