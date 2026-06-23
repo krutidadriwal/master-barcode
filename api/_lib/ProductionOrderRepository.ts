@@ -58,38 +58,42 @@ export class ProductionOrderRepository {
     if (!this.pgPool || this.initializedPg) return;
     this.initializedPg = true;
 
-    const client = await this.pgPool.connect();
     try {
-      console.log('[PO Repo] Verifying production_order_barcode table schema...');
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS ${TABLE} (
-          id                      BIGSERIAL PRIMARY KEY,
-          reference_code_original VARCHAR(100) NOT NULL,
-          reference_code_short    VARCHAR(20)  NOT NULL,
-          import_date             DATE,
-          order_quantity          INTEGER      NOT NULL DEFAULT 0,
-          item_status             VARCHAR(100),
-          suborder_quantity       INTEGER      NOT NULL DEFAULT 0,
-          item_quantity           INTEGER      NOT NULL DEFAULT 0,
-          returned_quantity       INTEGER      NOT NULL DEFAULT 0,
-          cancelled_quantity      INTEGER      NOT NULL DEFAULT 0,
-          shipped_quantity        INTEGER      NOT NULL DEFAULT 0,
-          sku                     VARCHAR(100) NOT NULL,
-          sub_product_count       INTEGER      NOT NULL DEFAULT 0,
-          product_name            VARCHAR(255),
-          brand                   VARCHAR(100),
-          model_no                VARCHAR(100),
-          ean                     VARCHAR(100),
-          size                    VARCHAR(50),
-          code_match              BOOLEAN,
-          created_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-          updated_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE (reference_code_original, sku)
-        );
-        ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS code_match BOOLEAN;
-      `);
-    } finally {
-      client.release();
+      const client = await this.pgPool.connect();
+      try {
+        console.log('[PO Repo] Verifying production_order_barcode table schema...');
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS ${TABLE} (
+            id                      BIGSERIAL PRIMARY KEY,
+            reference_code_original VARCHAR(100) NOT NULL,
+            reference_code_short    VARCHAR(20)  NOT NULL,
+            import_date             DATE,
+            order_quantity          INTEGER      NOT NULL DEFAULT 0,
+            item_status             VARCHAR(100),
+            suborder_quantity       INTEGER      NOT NULL DEFAULT 0,
+            item_quantity           INTEGER      NOT NULL DEFAULT 0,
+            returned_quantity       INTEGER      NOT NULL DEFAULT 0,
+            cancelled_quantity      INTEGER      NOT NULL DEFAULT 0,
+            shipped_quantity        INTEGER      NOT NULL DEFAULT 0,
+            sku                     VARCHAR(100) NOT NULL,
+            sub_product_count       INTEGER      NOT NULL DEFAULT 0,
+            product_name            VARCHAR(255),
+            brand                   VARCHAR(100),
+            model_no                VARCHAR(100),
+            ean                     VARCHAR(100),
+            size                    VARCHAR(50),
+            code_match              BOOLEAN,
+            created_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (reference_code_original, sku)
+          );
+          ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS code_match BOOLEAN;
+        `);
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      console.error('[PO Repo] ensureTable failed (non-fatal):', err);
     }
   }
 

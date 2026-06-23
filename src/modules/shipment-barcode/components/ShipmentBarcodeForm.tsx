@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   RefreshCw, Terminal, AlertTriangle, CheckCircle2, XCircle,
-  Printer, ShieldAlert, Inbox, FileSpreadsheet, Lock, Unlock,
-  ClipboardCheck, BarChart4, Sparkles, Search,
+  ShieldAlert, Inbox, FileSpreadsheet, Lock, Unlock,
+  ClipboardCheck, Sparkles, Search,
 } from 'lucide-react';
 import { Product } from '../../../shared/types';
 import { BarcodePreview } from '../../single-barcode-generator/components/BarcodePreview';
@@ -65,7 +65,6 @@ export function ShipmentBarcodeForm() {
   const [excessQtyFrequency, setExcessQtyFrequency] = useState<Record<string, number>>({});
   const [noProductData, setNoProductData]       = useState<NoProductEntry[]>([]);
   const [scanTape, setScanTape]                 = useState<ScanTapeEntry[]>([]);
-  const [barcodePrintQueue, setBarcodePrintQueue] = useState<string[]>([]);
   const [activePrintBatch, setActivePrintBatch] = useState<Array<{ product: Product }>>([]);
   const [locked, setLocked]                     = useState(false);
 
@@ -145,7 +144,6 @@ export function ShipmentBarcodeForm() {
     setExcessQtyFrequency({});
     setNoProductData([]);
     setScanTape([]);
-    setBarcodePrintQueue([]);
     setActivePrintBatch([]);
     setLocked(false);
   };
@@ -292,7 +290,7 @@ export function ShipmentBarcodeForm() {
         }
 
         setScanTape(prev => [{ sku: product.sku, name: product.product_name, timestamp: new Date().toLocaleTimeString(), isExcess }, ...prev]);
-        setBarcodePrintQueue(prev => [...prev, product.sku]);
+
         setActivePrintBatch([{ product }]);
 
         setScanStatus({
@@ -307,7 +305,7 @@ export function ShipmentBarcodeForm() {
         setExcessQtyFrequency(prev => ({ ...prev, [product.sku]: nextExcess }));
 
         setScanTape(prev => [{ sku: product.sku, name: product.product_name, timestamp: new Date().toLocaleTimeString(), isExcess: true }, ...prev]);
-        setBarcodePrintQueue(prev => [...prev, product.sku]);
+
         setActivePrintBatch([{ product }]);
 
         setScanStatus({
@@ -364,12 +362,7 @@ export function ShipmentBarcodeForm() {
 
   // ── Derived stats ─────────────────────────────────────────────────────────
 
-  const totalReceived        = Object.values(countingQty).reduce((s, n) => s + n, 0);
-  const uniqueMatchedSKUs    = poLines.filter(l => (countingQty[l.sku] || 0) > 0).length;
-  const totalExcessQty       = Object.values(excessQtyFrequency).reduce((s, n) => s + n, 0);
-  const totalMissingProduct  = noProductData.length;
-  const totalPrintJobs       = barcodePrintQueue.length;
-  const poLinesCompleted     = poLines.filter(l => (countingQty[l.sku] || 0) >= l.original_quantity).length;
+  const poLinesCompleted = poLines.filter(l => (countingQty[l.sku] || 0) >= l.original_quantity).length;
 
   // Active table: only rows with at least one scan
   const activeRows = poLines.filter(l => (countingQty[l.sku] || 0) > 0);
@@ -382,162 +375,115 @@ export function ShipmentBarcodeForm() {
   }));
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-2.5">
 
-      {/* ── Title Banner ── */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-900 border border-slate-800 p-6 rounded-2xl gap-4 shadow-xl">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2">
-            <span className="text-xs uppercase bg-amber-500/10 border border-amber-500/30 text-amber-400 px-2.5 py-0.5 rounded-md font-bold tracking-wider">
-              Warehouse Inbound
-            </span>
-            <span className="text-xs uppercase bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 px-2.5 py-0.5 rounded-md font-bold tracking-wider">
-              Purchase Order Mode
-            </span>
+      {/* ── Compact Header Bar ── */}
+      <div className="flex items-center justify-between bg-slate-900 border border-slate-800 px-4 py-2.5 rounded-xl gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[9px] uppercase bg-amber-500/10 border border-amber-500/30 text-amber-400 px-2 py-0.5 rounded font-bold tracking-wider">Inbound</span>
+            <span className="text-[9px] uppercase bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 px-2 py-0.5 rounded font-bold tracking-wider">PO Mode</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Shipment Barcode Receiving</h1>
-          <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
-            Select a Purchase Order by Ref Num, scan inbound stock continuously, and labels print automatically. Excess and unmatched items are tracked in real time.
-          </p>
+          <h1 className="text-sm font-bold tracking-tight text-white whitespace-nowrap">Shipment Barcode Receiving</h1>
         </div>
-      </div>
-
-      {/* ── Sync Controls ── */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-xl px-5 py-3">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => handlePOSync(false)}
-            disabled={syncState.type === 'loading'}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 px-4 rounded-lg transition cursor-pointer select-none"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${syncState.type === 'loading' ? 'animate-spin' : ''}`} />
-            Sync Purchase Orders
-          </button>
+        <div className="flex items-center gap-2.5 shrink-0">
+          {syncState.type !== 'idle' && (
+            <div className={`flex items-center gap-1 text-[10px] max-w-xs ${
+              syncState.type === 'error' ? 'text-red-400' :
+              syncState.type === 'success' ? 'text-emerald-400' : 'text-indigo-400'
+            }`}>
+              {syncState.type === 'error'   && <XCircle      className="h-3 w-3 shrink-0" />}
+              {syncState.type === 'success' && <CheckCircle2 className="h-3 w-3 shrink-0" />}
+              {syncState.type === 'loading' && <RefreshCw    className="h-3 w-3 shrink-0 animate-spin" />}
+              <span className="truncate">{syncState.type === 'loading' ? 'Syncing…' : (syncState as any).message}</span>
+            </div>
+          )}
           <button
             onClick={() => handlePOSync(true)}
             disabled={syncState.type === 'loading'}
-            className="text-indigo-400 hover:text-indigo-300 text-[11px] font-bold underline cursor-pointer disabled:opacity-50 select-none"
+            className="text-indigo-400 hover:text-indigo-300 text-[10px] font-bold underline cursor-pointer disabled:opacity-50 select-none whitespace-nowrap"
           >
-            Load demo data
+            Load demo
+          </button>
+          <button
+            onClick={() => handlePOSync(false)}
+            disabled={syncState.type === 'loading'}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-semibold py-1.5 px-3 rounded-lg transition cursor-pointer select-none whitespace-nowrap"
+          >
+            <RefreshCw className={`h-3 w-3 ${syncState.type === 'loading' ? 'animate-spin' : ''}`} />
+            Sync POs
           </button>
         </div>
-
-        {syncState.type !== 'idle' && (
-          <div className={`flex items-center gap-1.5 text-[11px] ${
-            syncState.type === 'error'   ? 'text-red-400' :
-            syncState.type === 'success' ? 'text-emerald-400' : 'text-indigo-400'
-          }`}>
-            {syncState.type === 'error'   && <XCircle       className="h-3.5 w-3.5 shrink-0" />}
-            {syncState.type === 'success' && <CheckCircle2  className="h-3.5 w-3.5 shrink-0" />}
-            {syncState.type === 'loading' && <RefreshCw     className="h-3.5 w-3.5 shrink-0 animate-spin" />}
-            <span>{syncState.type === 'loading' ? 'Syncing Purchase Orders…' : (syncState as any).message}</span>
-          </div>
-        )}
       </div>
 
-      {/* ── PO Ref Num Selector ── */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-        <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-          <FileSpreadsheet className="h-4 w-4 text-indigo-400" />
-          Purchase Order Selection
-        </h2>
-
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 max-w-lg">
-          <div className="relative flex-1">
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-              <Search className="h-4 w-4 text-slate-500" />
-            </div>
-            <input
-              type="text"
-              value={poRefNumInput}
-              onChange={e => { setPoRefNumInput(e.target.value); setShowRefNumList(true); }}
-              onFocus={() => setShowRefNumList(true)}
-              onBlur={() => setTimeout(() => setShowRefNumList(false), 150)}
-              placeholder="e.g. 24134-YJ, VS-PW260515-1"
-              className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 font-mono transition"
-            />
-            {/* Dropdown of available ref nums */}
-            {showRefNumList && availableRefNums.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-48 overflow-y-auto">
-                {availableRefNums
-                  .filter(r => !poRefNumInput || r.toLowerCase().includes(poRefNumInput.toLowerCase()))
-                  .map(ref => (
-                    <button
-                      key={ref}
-                      onMouseDown={() => { setPoRefNumInput(ref); setShowRefNumList(false); }}
-                      className="w-full text-left px-4 py-2.5 text-xs font-mono text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
-                    >
-                      {ref}
-                    </button>
-                  ))}
-              </div>
-            )}
+      {/* ── PO Selector (compact single row) ── */}
+      <div className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5">
+        <div className="relative flex-shrink-0 w-72">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Search className="h-3.5 w-3.5 text-slate-500" />
           </div>
-
-          {poLinesLoading && (
-            <RefreshCw className="h-4 w-4 text-indigo-400 animate-spin shrink-0" />
+          <input
+            type="text"
+            value={poRefNumInput}
+            onChange={e => { setPoRefNumInput(e.target.value); setShowRefNumList(true); }}
+            onFocus={() => setShowRefNumList(true)}
+            onBlur={() => setTimeout(() => setShowRefNumList(false), 150)}
+            placeholder="e.g. VS-PW260515-1"
+            className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 font-mono transition"
+          />
+          {showRefNumList && availableRefNums.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-48 overflow-y-auto">
+              {availableRefNums
+                .filter(r => !poRefNumInput || r.toLowerCase().includes(poRefNumInput.toLowerCase()))
+                .map(ref => (
+                  <button
+                    key={ref}
+                    onMouseDown={() => { setPoRefNumInput(ref); setShowRefNumList(false); }}
+                    className="w-full text-left px-4 py-2 text-xs font-mono text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
+                  >
+                    {ref}
+                  </button>
+                ))}
+            </div>
           )}
         </div>
 
-        {activePoRefNum && (
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <span className="bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 px-3 py-1.5 rounded-lg font-bold font-mono">
-              Active PO: {activePoRefNum}
+        {poLinesLoading && <RefreshCw className="h-3.5 w-3.5 text-indigo-400 animate-spin shrink-0" />}
+
+        {activePoRefNum && !poLinesLoading && (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="bg-indigo-500/10 border border-indigo-500/25 text-indigo-300 px-2.5 py-1 rounded-lg font-bold font-mono whitespace-nowrap">
+              {activePoRefNum}
             </span>
-            <span className="text-slate-500">
-              {poLines.length} SKU{poLines.length !== 1 ? 's' : ''} in this PO
-            </span>
+            <span className="text-slate-400 whitespace-nowrap">{poLines.length} line{poLines.length !== 1 ? 's' : ''}</span>
             {poLines.length > 0 && poLinesCompleted === poLines.length && (
-              <span className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 px-3 py-1 rounded-lg font-bold">
-                All lines complete
-              </span>
+              <span className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap">All done</span>
             )}
           </div>
         )}
-      </div>
-
-      {/* ── Stats Cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
-        {[
-          { label: 'Total Received',    value: totalReceived,       color: 'text-white',       icon: <BarChart4  className="h-full w-full" /> },
-          { label: 'Matched SKUs',      value: uniqueMatchedSKUs,   color: 'text-emerald-400', icon: <CheckCircle2 className="h-full w-full" /> },
-          { label: 'PO Lines Done',     value: poLinesCompleted,    color: 'text-indigo-400',  icon: <FileSpreadsheet className="h-full w-full" /> },
-          { label: 'Excess Qty',        value: totalExcessQty,      color: 'text-amber-400',   icon: <AlertTriangle className="h-full w-full" /> },
-          { label: 'Missing Product',   value: totalMissingProduct, color: 'text-red-400',     icon: <ShieldAlert className="h-full w-full" /> },
-          { label: 'Print Queue',       value: totalPrintJobs,      color: 'text-purple-400',  icon: <Printer     className="h-full w-full" /> },
-        ].map(({ label, value, color, icon }) => (
-          <div key={label} className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col justify-between shadow-lg relative overflow-hidden">
-            <span className={`text-xs font-semibold uppercase tracking-wider ${color}`}>{label}</span>
-            <div className={`text-2xl font-bold font-mono mt-1.5 ${color}`}>{value}</div>
-            <div className={`absolute right-3 bottom-3 h-8 w-8 pointer-events-none opacity-10 ${color}`}>{icon}</div>
-          </div>
-        ))}
       </div>
 
       {/* ── Main workspace ── */}
       {!locked ? (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="flex flex-col gap-2.5">
 
-          {/* Scan Input */}
-          <div className="lg:col-span-12 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-              <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 select-none">
-                <Terminal className="h-4 w-4 text-indigo-400" />
-                Continuous Barcode Input
+          {/* Scan Input — accent pop */}
+          <div className="bg-indigo-600 rounded-2xl p-4 shadow-xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold text-white uppercase tracking-widest flex items-center gap-2 select-none">
+                <Terminal className="h-3.5 w-3.5" />
+                Barcode Scanner
               </h2>
-              <div className="flex items-center gap-2">
-                <span className="text-[10.5px] font-bold text-slate-400 uppercase tracking-wider">Mode:</span>
-                <div className="inline-flex rounded-lg bg-slate-950 p-1 border border-slate-800">
-                  {(['autofocus', 'manual'] as const).map(m => (
-                    <button key={m} type="button" onClick={() => setScanMode(m)}
-                      className={`px-3 py-1 text-[10.5px] font-bold rounded-md transition cursor-pointer ${
-                        scanMode === m ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white hover:bg-slate-900'
-                      }`}
-                    >
-                      {m === 'autofocus' ? '🎯 Auto-Focus' : '✏️ Manual'}
-                    </button>
-                  ))}
-                </div>
+              <div className="inline-flex rounded-lg bg-indigo-700 p-0.5">
+                {(['autofocus', 'manual'] as const).map(m => (
+                  <button key={m} type="button" onClick={() => setScanMode(m)}
+                    className={`px-3 py-1 text-[10px] font-bold rounded-md transition cursor-pointer ${
+                      scanMode === m ? 'bg-white text-indigo-700 shadow' : 'text-indigo-200 hover:text-white'
+                    }`}
+                  >
+                    {m === 'autofocus' ? '🎯 Auto-Focus' : '✏️ Manual'}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -552,157 +498,154 @@ export function ShipmentBarcodeForm() {
                   !activePoRefNum
                     ? 'SELECT A PO REF NUM ABOVE TO BEGIN SCANNING...'
                     : scanMode === 'autofocus'
-                      ? '🎯 AUTO-FOCUS ACTIVE — SCAN BARCODES DIRECTLY (AUTO-PROCESS IN 200MS)...'
+                      ? '🎯 AUTO-FOCUS ACTIVE — SCAN BARCODES DIRECTLY...'
                       : '✏️ TYPE SKU OR SCAN ANYWHERE — PRESS ENTER TO SUBMIT...'
                 }
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-4 text-xs font-mono tracking-widest text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 disabled:opacity-40 transition text-center uppercase"
+                className="w-full bg-indigo-700 border-2 border-indigo-400/40 focus:border-white rounded-xl px-4 py-3.5 text-sm font-mono tracking-widest text-white placeholder:text-indigo-300/60 focus:outline-none focus:ring-2 focus:ring-white/20 disabled:opacity-40 transition text-center uppercase caret-white"
               />
               {scanMode === 'manual' && activePoRefNum && (
-                <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white text-[10px] font-bold tracking-wide cursor-pointer">
-                  Trigger Scan
+                <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 py-1.5 px-3 bg-white hover:bg-indigo-50 text-indigo-700 rounded-lg text-[10px] font-bold tracking-wide cursor-pointer">
+                  Scan
                 </button>
               )}
             </form>
 
-            <div className={`p-3.5 rounded-xl border text-xs flex items-center gap-2.5 select-none ${
-              scanStatus.type === 'error'      ? 'bg-red-500/10 border-red-500/20 text-red-400' :
-              scanStatus.type === 'success'    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
-              scanStatus.type === 'warning'    ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' :
-              scanStatus.type === 'processing' ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-400' :
-              'bg-slate-950 border-slate-800 text-slate-400'
+            <div className={`px-3 py-2 rounded-lg border text-xs flex items-center gap-2 select-none ${
+              scanStatus.type === 'error'      ? 'bg-red-500/20 border-red-300/20 text-red-200' :
+              scanStatus.type === 'success'    ? 'bg-emerald-500/20 border-emerald-300/20 text-emerald-200' :
+              scanStatus.type === 'warning'    ? 'bg-amber-500/20 border-amber-300/20 text-amber-200' :
+              scanStatus.type === 'processing' ? 'bg-indigo-500/30 border-indigo-300/20 text-indigo-100' :
+              'bg-indigo-700/50 border-indigo-400/20 text-indigo-200'
             }`}>
-              {scanStatus.type === 'error'      && <XCircle       className="h-4 w-4 shrink-0" />}
-              {scanStatus.type === 'success'    && <CheckCircle2  className="h-4 w-4 shrink-0 animate-bounce" />}
-              {scanStatus.type === 'warning'    && <AlertTriangle className="h-4 w-4 shrink-0" />}
-              {scanStatus.type === 'processing' && <RefreshCw     className="h-4 w-4 shrink-0 animate-spin" />}
-              {scanStatus.type === 'idle'       && <Terminal      className="h-4 w-4 shrink-0 text-slate-500" />}
-              <span>{scanStatus.message}</span>
+              {scanStatus.type === 'error'      && <XCircle       className="h-3.5 w-3.5 shrink-0" />}
+              {scanStatus.type === 'success'    && <CheckCircle2  className="h-3.5 w-3.5 shrink-0" />}
+              {scanStatus.type === 'warning'    && <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
+              {scanStatus.type === 'processing' && <RefreshCw     className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+              {scanStatus.type === 'idle'       && <Terminal      className="h-3.5 w-3.5 shrink-0 text-indigo-300" />}
+              <span className="font-medium">{scanStatus.message}</span>
             </div>
           </div>
 
-          {/* Active Shipment Table */}
-          <div className="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3 select-none">
-              <div className="flex items-center gap-2">
-                <FileSpreadsheet className="h-4 w-4 text-emerald-400" />
-                <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Active Shipment Table</h2>
+          {/* Active Shipment Table + Scan Tape */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5">
+
+            {/* Active Shipment Table */}
+            <div className="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3 select-none">
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
+                  <h2 className="text-xs font-bold text-slate-100 uppercase tracking-wider">Active Shipment</h2>
+                </div>
+                {activePoRefNum && poLines.length > 0 && (
+                  <span className="text-[10px] font-bold text-slate-400">
+                    {activeRows.length} / {poLines.length} scanned
+                  </span>
+                )}
               </div>
-              {activePoRefNum && poLines.length > 0 && (
-                <span className="text-[10px] font-bold text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-                  {poLines.length} PO Lines · {activeRows.length} scanned
-                </span>
+
+              {!activePoRefNum ? (
+                <div className="flex flex-col items-center justify-center py-10 text-center space-y-2 select-none">
+                  <Inbox className="h-7 w-7 text-slate-700" />
+                  <p className="text-xs text-slate-500">No PO selected</p>
+                </div>
+              ) : activeRows.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-10 text-center space-y-2 select-none">
+                  <Inbox className="h-7 w-7 text-indigo-500/30 animate-pulse" />
+                  <p className="text-xs text-slate-400">Awaiting first scan</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[480px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-[10px] uppercase font-bold text-slate-500 select-none">
+                        <th className="py-2 px-3">SKU</th>
+                        <th className="py-2 px-3 text-right">Ordered</th>
+                        <th className="py-2 px-3 text-right">Pending</th>
+                        <th className="py-2 px-3 text-right">Received</th>
+                        <th className="py-2 px-3 text-center">Status</th>
+                        <th className="py-2 px-3 text-right">Excess</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50 text-xs">
+                      {activeRows.map(line => {
+                        const received   = countingQty[line.sku] || 0;
+                        const pendingQty = Math.max(0, line.original_quantity - received);
+                        const excessQty  = Math.max(0, received - line.original_quantity);
+                        return (
+                          <tr key={line.sku} className="hover:bg-slate-800/30 transition">
+                            <td className="py-2 px-3 font-mono font-bold text-indigo-300">{line.sku}</td>
+                            <td className="py-2 px-3 text-right font-mono text-slate-400">{line.original_quantity}</td>
+                            <td className="py-2 px-3 text-right font-mono text-slate-400">{pendingQty}</td>
+                            <td className="py-2 px-3 text-right font-mono font-bold text-white">{received}</td>
+                            <td className="py-2 px-3 text-center">
+                              {received >= line.original_quantity ? (
+                                <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
+                                  {excessQty > 0 ? 'Excess' : 'Done'}
+                                </span>
+                              ) : (
+                                <span className="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
+                                  Pending
+                                </span>
+                              )}
+                            </td>
+                            <td className={`py-2 px-3 text-right font-mono font-bold ${excessQty > 0 ? 'text-amber-300' : 'text-slate-700'}`}>
+                              {excessQty > 0 ? `+${excessQty}` : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
 
-            {!activePoRefNum ? (
-              <div className="flex flex-col items-center justify-center py-14 text-center space-y-3 select-none">
-                <div className="bg-slate-950 p-4 rounded-full border border-slate-800 text-slate-700">
-                  <Inbox className="h-8 w-8" />
+            {/* Live Scan Tape */}
+            <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
+              <h2 className="text-xs font-bold text-slate-100 uppercase tracking-wider flex items-center gap-2 border-b border-slate-800 pb-2 mb-3 select-none">
+                <Terminal className="h-3.5 w-3.5 text-purple-400" />
+                Live Scan Tape
+              </h2>
+
+              {scanTape.length === 0 && noProductData.length === 0 ? (
+                <div className="flex flex-col items-center justify-center text-center py-10 text-slate-500 text-[11px] space-y-2 select-none">
+                  <Terminal className="h-5 w-5 text-slate-700" />
+                  <span>Awaiting first scan.</span>
                 </div>
-                <p className="text-xs font-bold text-slate-400">No PO selected</p>
-                <p className="text-[11px] text-slate-500 max-w-xs">Enter a PO Ref Num above or sync from the Google Sheet first.</p>
-              </div>
-            ) : activeRows.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-14 text-center space-y-3 select-none">
-                <div className="bg-slate-950 p-4 rounded-full border border-slate-850">
-                  <Inbox className="h-8 w-8 text-indigo-500/40 animate-pulse" />
+              ) : (
+                <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5">
+                  {scanTape.map((log, i) => (
+                    <div key={i} className={`p-2.5 rounded-xl border text-[10.5px] leading-snug space-y-0.5 ${
+                      log.isExcess ? 'bg-amber-500/5 border-amber-500/20' : 'bg-slate-950 border-slate-800'
+                    }`}>
+                      <div className="flex justify-between items-center">
+                        <span className="font-mono text-[10px] text-slate-500">{log.timestamp}</span>
+                        <span className={`font-bold uppercase tracking-wider text-[9px] ${log.isExcess ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {log.isExcess ? 'Excess' : 'OK'}
+                        </span>
+                      </div>
+                      <div className="font-bold font-mono text-indigo-300">{log.sku}</div>
+                      <p className="truncate text-slate-200">{log.name}</p>
+                    </div>
+                  ))}
+                  {noProductData.map((log, i) => (
+                    <div key={`miss-${i}`} className="p-2.5 rounded-xl border border-red-500/20 bg-red-500/5 text-[10.5px] leading-snug space-y-0.5">
+                      <div className="flex justify-between items-center">
+                        <span className="font-mono text-[10px] text-slate-500">{log.timestamp}</span>
+                        <span className="font-bold text-red-400 uppercase tracking-wider text-[9px]">Error</span>
+                      </div>
+                      <div className="font-bold font-mono text-red-400">"{log.value}"</div>
+                      <p className="text-red-300">{log.reason}</p>
+                    </div>
+                  ))}
                 </div>
-                <p className="text-xs font-bold text-slate-300">No scans yet for this PO</p>
-                <p className="text-[11px] text-slate-500 max-w-sm">Scan barcodes above to populate this table. Only scanned lines are shown.</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[560px]">
-                  <thead>
-                    <tr className="border-b border-slate-800 text-[10.5px] uppercase font-bold text-slate-400 select-none">
-                      <th className="py-2.5 px-3">SKU</th>
-                      <th className="py-2.5 px-3 text-right">Ordered Qty</th>
-                      <th className="py-2.5 px-3 text-right">Pending Qty</th>
-                      <th className="py-2.5 px-3 text-right">Received Qty</th>
-                      <th className="py-2.5 px-3 text-center">Status</th>
-                      <th className="py-2.5 px-3 text-right">Excess Qty</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60 text-xs">
-                    {activeRows.map(line => {
-                      const received   = countingQty[line.sku] || 0;
-                      const pendingQty = Math.max(0, line.original_quantity - received);
-                      const excessQty  = Math.max(0, received - line.original_quantity);
+              )}
+            </div>
 
-                      const statusNode =
-                        received >= line.original_quantity ? (
-                          <span className="bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 px-2 py-0.5 rounded text-[9.5px] font-bold uppercase tracking-wider">
-                            {excessQty > 0 ? 'Excess' : 'Completed'}
-                          </span>
-                        ) : (
-                          <span className="bg-amber-500/10 border border-amber-500/35 text-amber-400 px-2 py-0.5 rounded text-[9.5px] font-bold uppercase tracking-wider">
-                            Pending
-                          </span>
-                        );
-
-                      return (
-                        <tr key={line.sku} className="hover:bg-slate-800/20 transition">
-                          <td className="py-2.5 px-3 font-mono font-bold text-indigo-400">{line.sku}</td>
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-400">{line.original_quantity}</td>
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-400">{pendingQty}</td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-white">{received}</td>
-                          <td className="py-2.5 px-3 text-center">{statusNode}</td>
-                          <td className={`py-2.5 px-3 text-right font-mono font-bold ${excessQty > 0 ? 'text-amber-400' : 'text-slate-700'}`}>
-                            {excessQty > 0 ? `+${excessQty}` : '—'}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Live Scan Tape */}
-          <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-            <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 border-b border-slate-800 pb-3 select-none">
-              <Terminal className="h-4 w-4 text-purple-400" />
-              Live Scan Tape
-            </h2>
-
-            {scanTape.length === 0 && noProductData.length === 0 ? (
-              <div className="flex flex-col items-center justify-center text-center py-16 text-slate-500 text-[11px] space-y-2 select-none">
-                <Terminal className="h-6 w-6 text-slate-700" />
-                <span>Scanner primed. Awaiting first scan.</span>
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1 scrollbar-thin">
-                {scanTape.map((log, i) => (
-                  <div key={i} className={`p-3 rounded-xl border text-[11px] leading-snug space-y-1 ${
-                    log.isExcess ? 'bg-amber-500/5 border-amber-500/20 text-amber-300' : 'bg-slate-950 border-slate-800 text-slate-300'
-                  }`}>
-                    <div className="flex justify-between text-[10px] text-slate-500 select-none">
-                      <span className="font-mono">{log.timestamp}</span>
-                      <span className={`font-bold uppercase tracking-wider ${log.isExcess ? 'text-amber-400' : 'text-emerald-400'}`}>
-                        {log.isExcess ? 'Excess' : 'Received'}
-                      </span>
-                    </div>
-                    <div className="font-bold font-mono text-[11.5px] text-indigo-400">{log.sku}</div>
-                    <p className="truncate font-semibold text-xs text-slate-200">{log.name}</p>
-                  </div>
-                ))}
-                {noProductData.map((log, i) => (
-                  <div key={`miss-${i}`} className="p-3 rounded-xl border border-red-500/20 bg-red-500/5 text-[11px] leading-snug space-y-1">
-                    <div className="flex justify-between text-[10px] text-slate-500 select-none">
-                      <span className="font-mono">{log.timestamp}</span>
-                      <span className="font-bold text-red-400 uppercase tracking-wider">Error</span>
-                    </div>
-                    <div className="font-bold font-mono text-[11.5px] text-red-400">"{log.value}"</div>
-                    <p className="font-semibold text-xs text-red-300">{log.reason}</p>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
 
           {/* End Session */}
-          <div className="lg:col-span-12 flex justify-end">
+          <div className="flex justify-end">
             <button
               onClick={() => {
                 if (window.confirm('Finished scanning? This will lock the session and show the excess summary.')) {
@@ -711,10 +654,10 @@ export function ShipmentBarcodeForm() {
                 }
               }}
               disabled={!activePoRefNum || poLines.length === 0}
-              className="w-full sm:w-auto bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold uppercase tracking-wider py-3.5 px-8 rounded-xl flex items-center justify-center gap-2 shadow-lg cursor-pointer select-none"
+              className="bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold uppercase tracking-wider py-2.5 px-6 rounded-xl flex items-center gap-2 shadow-lg cursor-pointer select-none"
             >
-              <Lock className="h-4 w-4" />
-              No More Shipments To Scan
+              <Lock className="h-3.5 w-3.5" />
+              End Session
             </button>
           </div>
 
