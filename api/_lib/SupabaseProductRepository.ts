@@ -180,6 +180,60 @@ export class SupabaseProductRepository {
     return mockMatch || null;
   }
 
+  async addProduct(input: { sku: string; item_name: string; mrp: string; ean_upc: string; batch_no?: string }): Promise<Product> {
+    await this.ensurePgTable();
+    const productId = `CUSTOM-${input.sku}`;
+    const now = new Date().toISOString();
+
+    if (this.pgPool) {
+      const client = await this.pgPool.connect();
+      try {
+        const res = await client.query(
+          `INSERT INTO ${TABLE}
+             (id, product_id, sku, product_name, mrp, "EANUPC", model_no, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+           ON CONFLICT (sku) DO UPDATE SET
+             product_name = EXCLUDED.product_name,
+             mrp          = EXCLUDED.mrp,
+             "EANUPC"     = EXCLUDED."EANUPC",
+             model_no     = EXCLUDED.model_no,
+             updated_at   = EXCLUDED.updated_at
+           RETURNING id, product_id, sku, product_name, brand, brand_id, mrp, model_no,
+                     "EANUPC", accounting_sku, product_image_url, created_at, updated_at`,
+          [productId, productId, input.sku, input.item_name, input.mrp, input.ean_upc || null, input.batch_no || null, now]
+        );
+        return this.rowToProduct(res.rows[0]);
+      } finally {
+        client.release();
+      }
+    }
+
+    if (this.supabaseClient) {
+      const { data, error } = await this.supabaseClient
+        .from('EasyEcomProductMaster')
+        .upsert({
+          id: productId, product_id: productId, sku: input.sku,
+          product_name: input.item_name, mrp: input.mrp,
+          EANUPC: input.ean_upc || null, model_no: input.batch_no || null,
+          created_at: now, updated_at: now,
+        }, { onConflict: 'sku' })
+        .select()
+        .single();
+      if (error) throw error;
+      return this.rowToProduct(data);
+    }
+
+    // Mock fallback
+    const product: Product = {
+      id: productId, product_id: productId, sku: input.sku,
+      product_name: input.item_name, mrp: input.mrp,
+      EANUPC: input.ean_upc || undefined, model_no: input.batch_no || undefined,
+      created_at: now, updated_at: now,
+    };
+    this.mockProducts.push(product);
+    return product;
+  }
+
   async getAllProducts(): Promise<Product[]> {
     if (this.pgPool) {
       try {
