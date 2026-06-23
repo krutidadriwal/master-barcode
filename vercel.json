@@ -1,11 +1,11 @@
 {
   "buildCommand": "vite build",
   "outputDirectory": "dist",
-  "routes": [
-    { "src": "/api/barcode/([^/?]+)(.*)", "dest": "/api/barcode?action=$1" },
-    { "src": "/api/shipment/([^/?]+)(.*)", "dest": "/api/shipment?action=$1" },
-    { "src": "/api/production-order/([^/?]+)(.*)", "dest": "/api/production-order?action=$1" },
-    { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
+  "rewrites": [
+    { "source": "/api/barcode/:action", "destination": "/api/barcode?action=:action" },
+    { "source": "/api/shipment/:action", "destination": "/api/shipment?action=:action" },
+    { "source": "/api/production-order/:action", "destination": "/api/production-order?action=:action" },
+    { "source": "/api/:path*", "destination": "/api/:path*" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
