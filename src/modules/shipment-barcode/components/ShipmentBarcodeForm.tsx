@@ -420,7 +420,7 @@ export function ShipmentBarcodeForm() {
       <div className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5">
         <div className="relative flex-shrink-0 w-72">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <Search className="h-3.5 w-3.5 text-slate-500" />
+            <Search className="h-3.5 w-3.5 text-slate-300" />
           </div>
           <input
             type="text"
@@ -429,7 +429,7 @@ export function ShipmentBarcodeForm() {
             onFocus={() => setShowRefNumList(true)}
             onBlur={() => setTimeout(() => setShowRefNumList(false), 150)}
             placeholder="e.g. VS-PW260515-1"
-            className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 font-mono transition"
+            className="w-full bg-slate-950 border border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 font-mono transition"
           />
           {showRefNumList && availableRefNums.length > 0 && (
             <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-48 overflow-y-auto">
@@ -501,7 +501,7 @@ export function ShipmentBarcodeForm() {
                       ? '🎯 AUTO-FOCUS ACTIVE — SCAN BARCODES DIRECTLY...'
                       : '✏️ TYPE SKU OR SCAN ANYWHERE — PRESS ENTER TO SUBMIT...'
                 }
-                className="w-full bg-indigo-700 border-2 border-indigo-400/40 focus:border-white rounded-xl px-4 py-3.5 text-sm font-mono tracking-widest text-white placeholder:text-indigo-300/60 focus:outline-none focus:ring-2 focus:ring-white/20 disabled:opacity-40 transition text-center uppercase caret-white"
+                className="w-full bg-indigo-900 border-2 border-indigo-400/40 focus:border-white rounded-xl px-4 py-3.5 text-sm font-mono tracking-widest text-white placeholder:text-indigo-300/60 focus:outline-none focus:ring-2 focus:ring-white/20 disabled:opacity-40 transition text-center uppercase caret-white"
               />
               {scanMode === 'manual' && activePoRefNum && (
                 <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 py-1.5 px-3 bg-white hover:bg-indigo-50 text-indigo-700 rounded-lg text-[10px] font-bold tracking-wide cursor-pointer">
