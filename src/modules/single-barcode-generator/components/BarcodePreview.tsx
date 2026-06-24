@@ -57,9 +57,10 @@ interface BarcodePreviewProps {
   isSelected?: boolean;
   scale?: number; // Visual preview scaling factor on screen
   batchNo?: string; // Overrides product.batch_no when provided
+  useStrippedSku?: boolean; // Show numeric-root SKU in Item No (production order use)
 }
 
-export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreviewProps) {
+export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku = false }: BarcodePreviewProps) {
   // Safe formatting Helper
   const formatMrp = (rawMrp: string) => {
     const clean = rawMrp.trim();
@@ -132,7 +133,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo }: BarcodePreview
         <div style={{ fontWeight: 700 }}>Item No</div>
         <div>:</div>
         <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
-          {product.sku || '990011'}
+          {useStrippedSku ? skuRoot : (product.sku || '990011')}
         </div>
 
         {/* Row 3: MRP */}

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Search, RefreshCw, CheckCircle2, AlertCircle, XCircle,
-  Printer, ClipboardList, ChevronRight, FileDown
+  Printer, ClipboardList, ChevronRight, FileDown, CloudDownload
 } from 'lucide-react';
 import { Product, ProductionOrderRow } from '../../../shared/types';
 import { BarcodePreview } from '../../single-barcode-generator/components/BarcodePreview';
@@ -73,6 +73,10 @@ async function fetchProductBySku(sku: string): Promise<Product> {
 // ---------- Component ----------
 
 export function ProductionOrderBarcodeForm() {
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ imported: number; updated: number; failed: number } | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
   const [shortCode, setShortCode] = useState('');
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -170,6 +174,22 @@ export function ProductionOrderBarcodeForm() {
     }
   };
 
+  const handleSync = async () => {
+    setSyncLoading(true);
+    setSyncResult(null);
+    setSyncError(null);
+    try {
+      const res = await fetch('/api/production-order/sync', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sync failed.');
+      setSyncResult({ imported: data.imported ?? 0, updated: data.updated ?? 0, failed: data.failed ?? 0 });
+    } catch (err: any) {
+      setSyncError(err.message || 'Sync failed.');
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
   const handlePrint = async () => {
     if (!canPrint) return;
 
@@ -220,14 +240,39 @@ export function ProductionOrderBarcodeForm() {
 
       {/* Header & Search Panel */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-        <div className="border-b border-slate-800/60 pb-4">
-          <h1 className="text-xl font-bold text-white flex items-center gap-2">
-            <ClipboardList className="h-5 w-5 text-indigo-400" />
-            Production Order Barcode
-          </h1>
-          <p className="text-slate-400 text-xs mt-1">
-            Enter the last 4–5 digits of a reference code to find the order and print its barcode
-          </p>
+        <div className="border-b border-slate-800/60 pb-4 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-bold text-white flex items-center gap-2">
+              <ClipboardList className="h-5 w-5 text-indigo-400" />
+              Production Order Barcode
+            </h1>
+            <p className="text-slate-400 text-xs mt-1">
+              Enter the last 4–5 digits of a reference code to find the order and print its barcode
+            </p>
+          </div>
+
+          {/* Sync button */}
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <button
+              onClick={handleSync}
+              disabled={syncLoading}
+              className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 hover:text-white font-semibold px-3 py-2 rounded-xl text-xs transition cursor-pointer"
+            >
+              {syncLoading
+                ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                : <CloudDownload className="h-3.5 w-3.5" />}
+              {syncLoading ? 'Syncing…' : 'Sync Sheet'}
+            </button>
+            {syncResult && !syncLoading && (
+              <p className="text-[10px] text-emerald-400">
+                +{syncResult.imported} new · {syncResult.updated} updated
+                {syncResult.failed > 0 && <span className="text-amber-400"> · {syncResult.failed} failed</span>}
+              </p>
+            )}
+            {syncError && !syncLoading && (
+              <p className="text-[10px] text-red-400">{syncError}</p>
+            )}
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -325,6 +370,11 @@ export function ProductionOrderBarcodeForm() {
                 <div>
                   <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block">Order SKU</span>
                   <span className="font-mono font-bold text-indigo-300 text-base">{selectedRow.sku}</span>
+                  {stripSkuSuffix(selectedRow.sku) !== selectedRow.sku && (
+                    <span className="font-mono text-xs text-slate-400 block mt-0.5">
+                      → {stripSkuSuffix(selectedRow.sku)}
+                    </span>
+                  )}
                 </div>
                 <div>
                   <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold block">Import Date</span>
@@ -499,7 +549,7 @@ export function ProductionOrderBarcodeForm() {
                 </div>
               ) : printProduct ? (
                 <div className="hover:ring-2 hover:ring-indigo-500 p-2 bg-white rounded-md transition shadow-2xl">
-                  <BarcodePreview product={printProduct} scale={1.5} />
+                  <BarcodePreview product={printProduct} scale={1.5} useStrippedSku />
                 </div>
               ) : productLookupError ? (
                 <div className="text-center text-red-400 text-xs px-4">
@@ -527,7 +577,7 @@ export function ProductionOrderBarcodeForm() {
         >
           {Array.from({ length: quantity }).map((_, i) => (
             <div key={i} className="print-label-item" style={{ width: '50mm', height: '30mm' }}>
-              <BarcodePreview product={printProduct} scale={1.0} />
+              <BarcodePreview product={printProduct} scale={1.0} useStrippedSku />
             </div>
           ))}
         </div>

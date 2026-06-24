@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ProductionOrderRepository } from './_lib/ProductionOrderRepository.js';
-import { ProductionOrderSyncService } from './_lib/ProductionOrderSyncService.js';
+import { ProductionOrderGSheetSyncService } from './_lib/ProductionOrderGSheetSyncService.js';
 
 const repository = new ProductionOrderRepository();
 
@@ -48,7 +48,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // POST /api/production-order/sync
     if (action === 'sync') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      const syncService = new ProductionOrderSyncService();
+      const syncService = new ProductionOrderGSheetSyncService();
       const result = await syncService.sync();
       return res.json({ success: true, ...result });
     }

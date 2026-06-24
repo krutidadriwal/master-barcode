@@ -7,7 +7,7 @@ import { createServer as createViteServer } from 'vite';
 import { SupabaseProductRepository } from './api/_lib/SupabaseProductRepository';
 import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepository';
 import { ProductionOrderRepository } from './api/_lib/ProductionOrderRepository';
-import { ProductionOrderSyncService } from './api/_lib/ProductionOrderSyncService';
+import { ProductionOrderGSheetSyncService } from './api/_lib/ProductionOrderGSheetSyncService';
 import { EasyEcomProductMasterSyncService } from './api/_lib/EasyEcomProductMasterSyncService';
 import { SupabasePurchaseOrderRepository } from './api/_lib/SupabasePurchaseOrderRepository';
 
@@ -32,7 +32,7 @@ async function startServer() {
   const shipmentRepository = new SupabaseShipmentRepository();
   const poRepository = new SupabasePurchaseOrderRepository();
   const productionOrderRepository = new ProductionOrderRepository();
-  const productionOrderSyncService = new ProductionOrderSyncService();
+  const productionOrderSyncService = new ProductionOrderGSheetSyncService();
 
   // BFF API Routes
   app.get('/api/health', (_req, res) => {
