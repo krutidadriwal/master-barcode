@@ -111,6 +111,34 @@ async function startServer() {
   });
 
   /**
+   * GET  /api/barcode/settings  — return current app settings
+   * PUT  /api/barcode/settings  — persist new settings
+   */
+  app.get('/api/barcode/settings', async (_req, res) => {
+    try {
+      const settings = await repository.getSettings();
+      return res.json(settings);
+    } catch (err: any) {
+      console.error('[BFF API] GET settings error:', err);
+      return res.status(500).json({ error: 'Failed to load settings.' });
+    }
+  });
+
+  app.put('/api/barcode/settings', async (req, res) => {
+    try {
+      const { eanDuplicateEmails } = req.body;
+      if (!Array.isArray(eanDuplicateEmails)) {
+        return res.status(400).json({ error: 'eanDuplicateEmails must be an array.' });
+      }
+      await repository.saveSettings({ eanDuplicateEmails });
+      return res.json({ saved: true });
+    } catch (err: any) {
+      console.error('[BFF API] PUT settings error:', err);
+      return res.status(500).json({ error: 'Failed to save settings.' });
+    }
+  });
+
+  /**
    * Send escalation email for accumulated duplicate EAN entries from a session.
    */
   app.post('/api/barcode/send-duplicate-ean-email', async (req, res) => {
@@ -125,6 +153,14 @@ async function startServer() {
       if (!smtpHost || !smtpUser || !smtpPass) {
         console.warn('[BFF Email] SMTP not configured — skipping duplicate EAN email.');
         return res.json({ sent: false, reason: 'SMTP not configured.' });
+      }
+
+      const { eanDuplicateEmails } = await repository.getSettings();
+      const toAddresses = eanDuplicateEmails.length > 0 ? eanDuplicateEmails.join(', ') : smtpUser;
+
+      if (!toAddresses) {
+        console.warn('[BFF Email] No recipients configured — skipping duplicate EAN email.');
+        return res.json({ sent: false, reason: 'No recipients configured.' });
       }
 
       const transporter = nodemailer.createTransport({
@@ -144,12 +180,12 @@ async function startServer() {
 
       await transporter.sendMail({
         from: smtpUser,
-        to: 'kruti@cubelelo.com',
+        to: toAddresses,
         subject: '[Barcode Tool] Duplicate EANUPC Detected - Printing Blocked',
         text: `Duplicate EANUPC detected in Barcode Tool.\n\nModule: ${moduleName || 'Barcode Tool'}\nTimestamp: ${timestamp}\n\n${bodyText}\n\nPrinting was blocked automatically.`,
       });
 
-      console.log(`[BFF Email] Duplicate EAN escalation sent for ${duplicates.length} EAN(s).`);
+      console.log(`[BFF Email] Duplicate EAN escalation sent to "${toAddresses}" for ${duplicates.length} EAN(s).`);
       return res.json({ sent: true });
     } catch (error: any) {
       console.error('[BFF API] send-duplicate-ean-email error:', error);

@@ -16,6 +16,7 @@ import {
   hasSessionDuplicates,
   sendSessionDuplicateEmail,
 } from '../../../shared/services/EANDuplicateService';
+import { useSettings } from '../../../shared/contexts/SettingsContext';
 
 const PDF_ENABLE = import.meta.env.VITE_PDF_ENABLE === 'true';
 
@@ -81,6 +82,7 @@ async function fetchProductBySku(sku: string): Promise<Product> {
 // ---------- Component ----------
 
 export function ProductionOrderBarcodeForm() {
+  const { settings } = useSettings();
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncResult, setSyncResult] = useState<{ imported: number; updated: number; failed: number } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -222,9 +224,6 @@ export function ProductionOrderBarcodeForm() {
           });
           setSessionHasDuplicates(true);
           setDuplicateModal({ ean: ean!.trim(), products: dupeProducts });
-          sendSessionDuplicateEmail('Production Order Barcode').catch(e =>
-            console.error('[EAN Duplicate] Auto-email failed:', e)
-          );
           return; // Block print
         }
       } catch (err) {
@@ -292,7 +291,7 @@ export function ProductionOrderBarcodeForm() {
           <div className="flex items-center gap-2 text-xs text-red-300">
             <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
             <span className="font-semibold">Duplicate EANs detected this session.</span>
-            <span className="text-red-400/80">End session to send escalation email to kruti@cubelelo.com.</span>
+            <span className="text-red-400/80">End session to send escalation email to {settings.eanDuplicateEmails.join(', ') || 'no recipients configured'}.</span>
           </div>
           <button
             onClick={handleEndSession}

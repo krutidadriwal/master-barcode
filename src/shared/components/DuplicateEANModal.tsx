@@ -1,5 +1,6 @@
 import { XCircle, AlertTriangle, Mail } from 'lucide-react';
 import { Product } from '../types';
+import { useSettings } from '../contexts/SettingsContext';
 
 interface DuplicateEANModalProps {
   ean: string;
@@ -8,6 +9,11 @@ interface DuplicateEANModalProps {
 }
 
 export function DuplicateEANModal({ ean, products, onClose }: DuplicateEANModalProps) {
+  const { settings } = useSettings();
+  const emailDisplay = settings.eanDuplicateEmails.length > 0
+    ? settings.eanDuplicateEmails.join(', ')
+    : 'no recipients configured';
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="bg-slate-900 border border-red-500/40 rounded-2xl p-6 shadow-2xl max-w-md w-full mx-4">
@@ -65,7 +71,7 @@ export function DuplicateEANModal({ ean, products, onClose }: DuplicateEANModalP
         <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 mb-5 flex items-start gap-2">
           <Mail className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
           <p className="text-xs text-amber-300 leading-relaxed">
-            An escalation email will be sent to <span className="font-semibold">kruti@cubelelo.com</span> at the end of this session.
+            An escalation email will be sent to <span className="font-semibold">{emailDisplay}</span> at the end of this session.
             Please resolve the product master data before printing.
           </p>
         </div>

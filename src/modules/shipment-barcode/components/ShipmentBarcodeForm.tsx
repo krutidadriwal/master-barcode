@@ -370,9 +370,6 @@ export function ShipmentBarcodeForm() {
               type: 'error',
               message: `BLOCKED: Duplicate EAN [${product.EANUPC!.trim()}] on SKU "${product.sku}". Printing blocked.`,
             });
-            sendSessionDuplicateEmail('Shipment Barcode').catch(e =>
-              console.error('[EAN Duplicate] Auto-email failed:', e)
-            );
             return;
           }
         } catch (err) {

@@ -77,6 +77,8 @@ export async function sendSessionDuplicateEmail(moduleName: string): Promise<{ s
       console.error('[EANDuplicate] Email send failed:', await res.text());
       return { sent: false };
     }
+    // Clear after successful send so a second call in the same session is a no-op.
+    sessionStorage.removeItem(SESSION_KEY);
     return { sent: true };
   } catch (err) {
     console.error('[EANDuplicate] Email send error:', err);

@@ -14,6 +14,7 @@ export class SupabaseProductRepository {
   private pgPool: Pool | null = null;
   private initializedPg = false;
   private initializedBarcodeTable = false;
+  private initializedSettings = false;
 
   private mockProducts: Product[] = [];
 
@@ -560,6 +561,90 @@ export class SupabaseProductRepository {
     }
 
     return [];
+  }
+
+  // ── Settings (app_settings table) ────────────────────────────────────────
+
+  private async ensureSettingsTable(): Promise<void> {
+    if (!this.pgPool || this.initializedSettings) return;
+    this.initializedSettings = true;
+    const client = await this.pgPool.connect();
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key        TEXT PRIMARY KEY,
+          value      JSONB NOT NULL DEFAULT '[]'::jsonb,
+          updated_at TIMESTAMPTZ DEFAULT now()
+        )
+      `);
+    } finally {
+      client.release();
+    }
+  }
+
+  async getSettings(): Promise<{ eanDuplicateEmails: string[] }> {
+    const defaults = { eanDuplicateEmails: [] };
+
+    if (this.pgPool) {
+      try {
+        await this.ensureSettingsTable();
+        const res = await this.pgPool.query(
+          `SELECT value FROM app_settings WHERE key = 'ean_duplicate_emails'`
+        );
+        if (res.rows.length > 0) return { eanDuplicateEmails: res.rows[0].value as string[] };
+        return defaults;
+      } catch (err) {
+        console.error('[Settings] getSettings failed:', err);
+        return defaults;
+      }
+    }
+
+    if (this.supabaseClient) {
+      try {
+        const { data } = await this.supabaseClient
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'ean_duplicate_emails')
+          .maybeSingle();
+        if (data) return { eanDuplicateEmails: data.value as string[] };
+        return defaults;
+      } catch (err) {
+        console.error('[Settings REST] getSettings failed:', err);
+        return defaults;
+      }
+    }
+
+    return defaults;
+  }
+
+  async saveSettings(settings: { eanDuplicateEmails: string[] }): Promise<void> {
+    if (this.pgPool) {
+      try {
+        await this.ensureSettingsTable();
+        await this.pgPool.query(
+          `INSERT INTO app_settings (key, value, updated_at)
+           VALUES ('ean_duplicate_emails', $1::jsonb, now())
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+          [JSON.stringify(settings.eanDuplicateEmails)]
+        );
+      } catch (err) {
+        console.error('[Settings] saveSettings failed:', err);
+      }
+      return;
+    }
+
+    if (this.supabaseClient) {
+      try {
+        await this.supabaseClient
+          .from('app_settings')
+          .upsert(
+            { key: 'ean_duplicate_emails', value: settings.eanDuplicateEmails, updated_at: new Date().toISOString() },
+            { onConflict: 'key' }
+          );
+      } catch (err) {
+        console.error('[Settings REST] saveSettings failed:', err);
+      }
+    }
   }
 
   // ── getAllProducts ────────────────────────────────────────────────────────

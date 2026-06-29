@@ -11,7 +11,7 @@ interface DuplicateEANEntry {
   module: string;
 }
 
-async function sendDuplicateEANEmail(duplicates: DuplicateEANEntry[], moduleName: string): Promise<void> {
+async function sendDuplicateEANEmail(duplicates: DuplicateEANEntry[], moduleName: string, recipients: string[]): Promise<void> {
   const smtpHost = process.env.SMTP_HOST;
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = process.env.SMTP_PASS;
@@ -20,6 +20,8 @@ async function sendDuplicateEANEmail(duplicates: DuplicateEANEntry[], moduleName
     console.warn('[Email] SMTP not configured (SMTP_HOST/SMTP_USER/SMTP_PASS missing) — skipping duplicate EAN email.');
     return;
   }
+
+  const toAddresses = recipients.length > 0 ? recipients.join(', ') : smtpUser;
 
   const transporter = nodemailer.createTransport({
     host: smtpHost,
@@ -39,12 +41,12 @@ async function sendDuplicateEANEmail(duplicates: DuplicateEANEntry[], moduleName
 
   await transporter.sendMail({
     from: smtpUser,
-    to: 'kruti@cubelelo.com',
+    to: toAddresses,
     subject: '[Barcode Tool] Duplicate EANUPC Detected - Printing Blocked',
     text: `Duplicate EANUPC detected in Barcode Tool.\n\nModule: ${moduleName}\nTimestamp: ${timestamp}\n\n${bodyText}\n\nPrinting was blocked automatically.`,
   });
 
-  console.log(`[Email] Duplicate EAN escalation sent for ${duplicates.length} EAN(s) from module: ${moduleName}`);
+  console.log(`[Email] Duplicate EAN escalation sent to "${toAddresses}" for ${duplicates.length} EAN(s) from module: ${moduleName}`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -87,12 +89,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ isDuplicate: products.length > 1, products });
     }
 
+    // GET /api/barcode/settings
+    if (action === 'settings' && req.method === 'GET') {
+      const settings = await repository.getSettings();
+      return res.json(settings);
+    }
+
+    // PUT /api/barcode/settings
+    if (action === 'settings' && req.method === 'PUT') {
+      const { eanDuplicateEmails } = req.body;
+      if (!Array.isArray(eanDuplicateEmails)) {
+        return res.status(400).json({ error: 'eanDuplicateEmails must be an array.' });
+      }
+      await repository.saveSettings({ eanDuplicateEmails });
+      return res.json({ saved: true });
+    }
+
     // POST /api/barcode/send-duplicate-ean-email
     if (action === 'send-duplicate-ean-email') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
       const { duplicates, module: moduleName } = req.body;
       if (!Array.isArray(duplicates)) return res.status(400).json({ error: 'duplicates array is required.' });
-      await sendDuplicateEANEmail(duplicates, moduleName || 'Barcode Tool');
+      const { eanDuplicateEmails } = await repository.getSettings();
+      await sendDuplicateEANEmail(duplicates, moduleName || 'Barcode Tool', eanDuplicateEmails);
       return res.json({ sent: true });
     }
 

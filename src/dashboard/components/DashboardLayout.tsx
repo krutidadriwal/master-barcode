@@ -1,14 +1,16 @@
 import { useState } from 'react';
 import { REGISTERED_MODULES } from './ModuleRegistry';
-import { Layers, HardDrive, ShieldCheck, Heart, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Layers, HardDrive, ShieldCheck, Heart, RefreshCw, CheckCircle2, AlertCircle, Settings } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ProductMasterSyncResult } from '../../shared/types';
+import { SettingsModal } from '../../shared/components/SettingsModal';
 
 type SyncStatus = { status: 'idle' } | { status: 'loading' } | { status: 'success'; result: ProductMasterSyncResult } | { status: 'error'; error: string };
 
 export function DashboardLayout() {
   const [activeModuleId, setActiveModuleId] = useState<string>(REGISTERED_MODULES[0].id);
   const [syncState, setSyncState] = useState<SyncStatus>({ status: 'idle' });
+  const [showSettings, setShowSettings] = useState(false);
 
   const handleSyncProductMaster = async () => {
     if (syncState.status === 'loading') return;
@@ -80,6 +82,15 @@ export function DashboardLayout() {
               <RefreshCw className={`h-3.5 w-3.5 ${syncState.status === 'loading' ? 'animate-spin' : ''}`} />
               {syncState.status === 'loading' ? 'Syncing…' : 'Sync Product Master'}
             </button>
+
+            {/* Settings gear */}
+            <button
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+              className="flex items-center justify-center h-8 w-8 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-700/50 transition cursor-pointer"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
           </div>
 
         </div>
@@ -129,6 +140,8 @@ export function DashboardLayout() {
         </div>
 
       </main>
+
+      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
 
       {/* Workspace Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-6 text-xs text-slate-500">
