@@ -20,12 +20,14 @@ export function isEANUPCSelected(ean?: string): boolean {
   return v !== '' && v !== '0';
 }
 
-/** Queries the backend to find all SKUs sharing the same EANUPC. */
-export async function checkEANDuplicate(ean: string): Promise<DuplicateCheckResult> {
+/** Queries the backend to check for EAN/SKU duplicates.
+ *  In barcode-table mode the backend uses a cross-field JOIN keyed on SKU;
+ *  in central-DB mode it falls back to an EAN equality search. */
+export async function checkEANDuplicate(ean: string, sku?: string): Promise<DuplicateCheckResult> {
   const res = await fetch('/api/barcode/check-ean-duplicates', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ean }),
+    body: JSON.stringify({ ean, sku }),
   });
   if (!res.ok) throw new Error('Duplicate EAN check failed.');
   return res.json();

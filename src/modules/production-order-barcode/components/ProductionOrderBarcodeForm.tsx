@@ -212,7 +212,7 @@ export function ProductionOrderBarcodeForm() {
 
     if (useEAN) {
       try {
-        const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(ean!.trim());
+        const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(ean!.trim(), productData.sku);
         if (isDuplicate) {
           recordSessionDuplicate({
             ean: ean!.trim(),
@@ -222,10 +222,15 @@ export function ProductionOrderBarcodeForm() {
           });
           setSessionHasDuplicates(true);
           setDuplicateModal({ ean: ean!.trim(), products: dupeProducts });
+          sendSessionDuplicateEmail('Production Order Barcode').catch(e =>
+            console.error('[EAN Duplicate] Auto-email failed:', e)
+          );
           return; // Block print
         }
       } catch (err) {
         console.error('[EAN Duplicate Check] Failed:', err);
+        // Block on error — safer than allowing print when check status is unknown
+        return;
       }
     }
 

@@ -81,9 +81,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // POST /api/barcode/check-ean-duplicates
     if (action === 'check-ean-duplicates') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      const { ean } = req.body;
-      if (!ean) return res.status(400).json({ error: 'ean is required.' });
-      const products = await repository.findProductsByEANUPC(String(ean));
+      const { ean, sku } = req.body;
+      if (!ean && !sku) return res.status(400).json({ error: 'ean or sku is required.' });
+      const products = await repository.findDuplicates(String(sku || ''), String(ean || ''));
       return res.json({ isDuplicate: products.length > 1, products });
     }
 

@@ -65,7 +65,7 @@ export class SupabaseProductRepository {
   // ── Feature flag ──────────────────────────────────────────────────────────
 
   private get useBarcodeTable(): boolean {
-    return process.env.APP_SCRIPT_FOR_BARCODE === 'true';
+    return (process.env.APP_SCRIPT_FOR_BARCODE ?? '').trim() === 'true';
   }
 
   // ── Schema helpers ────────────────────────────────────────────────────────
@@ -393,10 +393,12 @@ export class SupabaseProductRepository {
           `SELECT id, product_id, sku, product_name, brand, brand_id, mrp, model_no,
                   "EANUPC", accounting_sku, product_image_url, created_at, updated_at
            FROM ${CENTRAL_TABLE}
-           WHERE LOWER("EANUPC") = LOWER($1)`,
+           WHERE LOWER(TRIM(COALESCE("EANUPC", ''))) = LOWER($1)`,
           [query]
         );
-        return (res.rows || []).map((r: any) => this.rowToProduct(r));
+        const found = (res.rows || []).map((r: any) => this.rowToProduct(r));
+        console.log(`[BFF Direct PG] findProductsByEANUPC("${query}"): ${found.length} row(s) — SKUs: [${found.map(p => p.sku).join(', ')}]`);
+        return found;
       } catch (err) {
         console.error('[BFF Direct PG] findProductsByEANUPC failed:', err);
       }
@@ -409,7 +411,9 @@ export class SupabaseProductRepository {
           .select('id, product_id, sku, product_name, brand, brand_id, mrp, model_no, EANUPC, accounting_sku, product_image_url, created_at, updated_at')
           .ilike('EANUPC', query);
         if (!error && data) {
-          return data.map((r: any) => this.rowToProduct(r));
+          const found = data.map((r: any) => this.rowToProduct(r));
+          console.log(`[BFF REST] findProductsByEANUPC("${query}"): ${found.length} row(s) — SKUs: [${found.map(p => p.sku).join(', ')}]`);
+          return found;
         }
       } catch (err) {
         console.error('[BFF REST] findProductsByEANUPC failed:', err);
@@ -425,11 +429,13 @@ export class SupabaseProductRepository {
         await this.ensureBarcodeTable();
         const res = await this.pgPool.query(
           `SELECT * FROM ${BARCODE_TABLE}
-           WHERE LOWER(COALESCE(ean_upc, ''))    = LOWER($1)
-              OR LOWER(COALESCE(custom_ean, '')) = LOWER($1)`,
+           WHERE LOWER(TRIM(COALESCE(ean_upc, '')))    = LOWER($1)
+              OR LOWER(TRIM(COALESCE(custom_ean, ''))) = LOWER($1)`,
           [query]
         );
-        return (res.rows || []).map((r: any) => this.rowToProductFromBarcodeTable(r));
+        const found = (res.rows || []).map((r: any) => this.rowToProductFromBarcodeTable(r));
+        console.log(`[BFF Barcode PG] findProductsByEANUPC("${query}"): ${found.length} row(s) — SKUs: [${found.map(p => p.sku).join(', ')}]`);
+        return found;
       } catch (err) {
         console.error('[BFF Barcode PG] findProductsByEANUPC failed:', err);
       }
@@ -442,10 +448,114 @@ export class SupabaseProductRepository {
           .select('*')
           .or(`ean_upc.ilike.${query},custom_ean.ilike.${query}`);
         if (!error && data) {
-          return data.map((r: any) => this.rowToProductFromBarcodeTable(r));
+          const found = data.map((r: any) => this.rowToProductFromBarcodeTable(r));
+          console.log(`[BFF Barcode REST] findProductsByEANUPC("${query}"): ${found.length} row(s) — SKUs: [${found.map(p => p.sku).join(', ')}]`);
+          return found;
         }
       } catch (err) {
         console.error('[BFF Barcode REST] findProductsByEANUPC failed:', err);
+      }
+    }
+
+    return [];
+  }
+
+  // ── findDuplicates (public router) ───────────────────────────────────────
+  // In barcode-table mode: uses the cross-field JOIN query (ean_upc = custom_ean,
+  // different first-7 SKU prefix).  In central-DB mode: falls back to EAN equality.
+
+  async findDuplicates(sku: string, ean: string): Promise<Product[]> {
+    if (this.useBarcodeTable) {
+      return this._findDuplicatesBySKU(sku);
+    }
+    return this.findProductsByEANUPC(ean);
+  }
+
+  private async _findDuplicatesBySKU(sku: string): Promise<Product[]> {
+    // ── pgPool path ──
+    if (this.pgPool) {
+      try {
+        await this.ensureBarcodeTable();
+        // Mirror of the user-defined SQL:
+        //   SELECT a.sku, b.sku FROM barcode_product_master a
+        //   INNER JOIN barcode_product_master b ON a.ean_upc = b.custom_ean AND a.sku < b.sku
+        //   WHERE LEFT(a.sku, 7) != LEFT(b.sku, 7)
+        // Adapted to: given a SKU, return all product rows involved in a conflict pair.
+        const res = await this.pgPool.query(
+          `SELECT DISTINCT bpm.*
+           FROM ${BARCODE_TABLE} bpm
+           JOIN (
+             SELECT a.sku AS s1, b.sku AS s2
+             FROM ${BARCODE_TABLE} a
+             INNER JOIN ${BARCODE_TABLE} b
+               ON a.ean_upc = b.custom_ean
+              AND a.sku    != b.sku
+             WHERE LEFT(a.sku, 7) != LEFT(b.sku, 7)
+               AND (a.sku = $1 OR b.sku = $1)
+           ) pairs ON bpm.sku IN (pairs.s1, pairs.s2)`,
+          [sku]
+        );
+        const found = (res.rows || []).map((r: any) => this.rowToProductFromBarcodeTable(r));
+        console.log(`[BFF Barcode PG] findDuplicatesBySKU("${sku}"): ${found.length} row(s) — SKUs: [${found.map(p => p.sku).join(', ')}]`);
+        return found;
+      } catch (err) {
+        console.error('[BFF Barcode PG] findDuplicatesBySKU failed:', err);
+      }
+    }
+
+    // ── Supabase REST path ──
+    // Decompose the JOIN into two sequential lookups since REST can't do self-joins.
+    if (this.supabaseClient) {
+      try {
+        const { data: targetRow } = await this.supabaseClient
+          .from(BARCODE_TABLE)
+          .select('sku, ean_upc, custom_ean')
+          .eq('sku', sku)
+          .maybeSingle();
+
+        if (!targetRow) return [];
+
+        const prefix = sku.slice(0, 7);
+        const conflictSkus = new Set<string>();
+
+        // Case A: this SKU is the "a" side — its ean_upc equals another's custom_ean
+        if (targetRow.ean_upc) {
+          const { data } = await this.supabaseClient
+            .from(BARCODE_TABLE)
+            .select('sku')
+            .eq('custom_ean', targetRow.ean_upc)
+            .neq('sku', sku);
+          for (const r of (data || [])) {
+            if ((r.sku as string).slice(0, 7) !== prefix) conflictSkus.add(r.sku);
+          }
+        }
+
+        // Case B: this SKU is the "b" side — its custom_ean equals another's ean_upc
+        if (targetRow.custom_ean) {
+          const { data } = await this.supabaseClient
+            .from(BARCODE_TABLE)
+            .select('sku')
+            .eq('ean_upc', targetRow.custom_ean)
+            .neq('sku', sku);
+          for (const r of (data || [])) {
+            if ((r.sku as string).slice(0, 7) !== prefix) conflictSkus.add(r.sku);
+          }
+        }
+
+        if (conflictSkus.size === 0) return [];
+
+        // Return both the current SKU and all conflicting SKUs as full product rows
+        const allSkus = [sku, ...Array.from(conflictSkus)];
+        const { data: allRows } = await this.supabaseClient
+          .from(BARCODE_TABLE)
+          .select('*')
+          .in('sku', allSkus);
+
+        const found = (allRows || []).map((r: any) => this.rowToProductFromBarcodeTable(r));
+        console.log(`[BFF Barcode REST] findDuplicatesBySKU("${sku}"): ${found.length} row(s) — SKUs: [${found.map(p => p.sku).join(', ')}]`);
+        return found;
+      } catch (err) {
+        console.error('[BFF Barcode REST] findDuplicatesBySKU failed:', err);
       }
     }
 

@@ -356,7 +356,7 @@ export function ShipmentBarcodeForm() {
       // Duplicate EAN check
       if (isEANUPCSelected(product.EANUPC)) {
         try {
-          const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(product.EANUPC!.trim());
+          const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(product.EANUPC!.trim(), product.sku);
           if (isDuplicate) {
             recordSessionDuplicate({
               ean: product.EANUPC!.trim(),
@@ -370,10 +370,18 @@ export function ShipmentBarcodeForm() {
               type: 'error',
               message: `BLOCKED: Duplicate EAN [${product.EANUPC!.trim()}] on SKU "${product.sku}". Printing blocked.`,
             });
+            sendSessionDuplicateEmail('Shipment Barcode').catch(e =>
+              console.error('[EAN Duplicate] Auto-email failed:', e)
+            );
             return;
           }
         } catch (err) {
           console.error('[EAN Duplicate Check] Failed:', err);
+          setScanStatus({
+            type: 'error',
+            message: 'EAN duplicate check failed — scan blocked for safety. Check server connection.',
+          });
+          return; // Block on error
         }
       }
 

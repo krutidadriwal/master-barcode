@@ -98,10 +98,12 @@ async function startServer() {
    */
   app.post('/api/barcode/check-ean-duplicates', async (req, res) => {
     try {
-      const { ean } = req.body;
-      if (!ean) return res.status(400).json({ error: 'ean is required.' });
-      const products = await repository.findProductsByEANUPC(String(ean));
-      return res.json({ isDuplicate: products.length > 1, products });
+      const { ean, sku } = req.body;
+      if (!ean && !sku) return res.status(400).json({ error: 'ean or sku is required.' });
+      const products = await repository.findDuplicates(String(sku || ''), String(ean || ''));
+      const isDuplicate = products.length > 1;
+      console.log(`[BFF API] check-ean-duplicates(sku="${sku}", ean="${ean}"): ${products.length} product(s) found, isDuplicate=${isDuplicate}. SKUs: [${products.map(p => p.sku).join(', ')}]`);
+      return res.json({ isDuplicate, products });
     } catch (error: any) {
       console.error('[BFF API] check-ean-duplicates error:', error);
       return res.status(500).json({ error: 'Duplicate EAN check failed.' });

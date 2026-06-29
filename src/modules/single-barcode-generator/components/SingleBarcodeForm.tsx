@@ -176,7 +176,7 @@ export function SingleBarcodeForm() {
     // Only check for duplicates when EANUPC is the value being printed
     if (useEAN) {
       try {
-        const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(ean!.trim());
+        const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(ean!.trim(), product.sku);
         if (isDuplicate) {
           recordSessionDuplicate({
             ean: ean!.trim(),
@@ -186,11 +186,15 @@ export function SingleBarcodeForm() {
           });
           setSessionHasDuplicates(true);
           setDuplicateModal({ ean: ean!.trim(), products: dupeProducts });
+          sendSessionDuplicateEmail('Single Barcode Generator').catch(e =>
+            console.error('[EAN Duplicate] Auto-email failed:', e)
+          );
           return; // Block print
         }
       } catch (err) {
         console.error('[EAN Duplicate Check] Failed:', err);
-        // Non-blocking: if the check itself fails, allow print and log
+        setError('EAN duplicate check failed — printing blocked for safety. Check server connection.');
+        return; // Block on error
       }
     }
 
