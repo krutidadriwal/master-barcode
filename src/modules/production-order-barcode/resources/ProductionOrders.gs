@@ -151,12 +151,15 @@ function PO_handleGetRequest(e) {
 /**
  * Entry point for the deployed Web App.
  *
- * If another script in this project already defines doGet(e), remove this
- * function and add the following line inside the existing doGet switch block:
- *
- *   if (e.parameter.request === 'production_orders') return PO_handleGetRequest(e);
+ * Routes:
+ *   ?request=production_orders   → PO_handleGetRequest  (existing)
+ *   ?action=barcodeProductMaster → getBarcodeProductMaster  (BarcodeProductMaster.gs)
  */
 function doGet(e) {
+  var action = (e && e.parameter) ? e.parameter.action : null;
+  if (action === 'barcodeProductMaster') {
+    return getBarcodeProductMaster(e);
+  }
   return PO_handleGetRequest(e);
 }
 

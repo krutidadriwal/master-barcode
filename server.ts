@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import nodemailer from 'nodemailer';
 import { createServer as createViteServer } from 'vite';
 import { SupabaseProductRepository } from './api/_lib/SupabaseProductRepository';
 import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepository';
@@ -93,6 +94,68 @@ async function startServer() {
   });
 
   /**
+   * Check if a given EANUPC is duplicated across multiple SKUs.
+   */
+  app.post('/api/barcode/check-ean-duplicates', async (req, res) => {
+    try {
+      const { ean } = req.body;
+      if (!ean) return res.status(400).json({ error: 'ean is required.' });
+      const products = await repository.findProductsByEANUPC(String(ean));
+      return res.json({ isDuplicate: products.length > 1, products });
+    } catch (error: any) {
+      console.error('[BFF API] check-ean-duplicates error:', error);
+      return res.status(500).json({ error: 'Duplicate EAN check failed.' });
+    }
+  });
+
+  /**
+   * Send escalation email for accumulated duplicate EAN entries from a session.
+   */
+  app.post('/api/barcode/send-duplicate-ean-email', async (req, res) => {
+    try {
+      const { duplicates, module: moduleName } = req.body;
+      if (!Array.isArray(duplicates)) return res.status(400).json({ error: 'duplicates array is required.' });
+
+      const smtpHost = process.env.SMTP_HOST;
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+
+      if (!smtpHost || !smtpUser || !smtpPass) {
+        console.warn('[BFF Email] SMTP not configured — skipping duplicate EAN email.');
+        return res.json({ sent: false, reason: 'SMTP not configured.' });
+      }
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: parseInt(process.env.SMTP_PORT || '587'),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: { user: smtpUser, pass: smtpPass },
+      });
+
+      const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+      const bodyText = (duplicates as any[]).map((entry: any) => {
+        const skuLines = (entry.affectedProducts || [])
+          .map((p: any) => `  SKU: ${p.sku}\n  Product: ${p.productName}`)
+          .join('\n\n');
+        return `EANUPC: ${entry.ean}\n\nAffected Products:\n\n${skuLines}`;
+      }).join('\n\n---\n\n');
+
+      await transporter.sendMail({
+        from: smtpUser,
+        to: 'kruti@cubelelo.com',
+        subject: '[Barcode Tool] Duplicate EANUPC Detected - Printing Blocked',
+        text: `Duplicate EANUPC detected in Barcode Tool.\n\nModule: ${moduleName || 'Barcode Tool'}\nTimestamp: ${timestamp}\n\n${bodyText}\n\nPrinting was blocked automatically.`,
+      });
+
+      console.log(`[BFF Email] Duplicate EAN escalation sent for ${duplicates.length} EAN(s).`);
+      return res.json({ sent: true });
+    } catch (error: any) {
+      console.error('[BFF API] send-duplicate-ean-email error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to send email.' });
+    }
+  });
+
+  /**
    * Get all products (helpful for user cheat-sheet/dropdown inside sandbox)
    */
   app.get('/api/barcode/products', async (_req, res) => {
@@ -117,6 +180,44 @@ async function startServer() {
     } catch (err: any) {
       console.error('[BFF Product Master Sync] Failed:', err);
       return res.status(500).json({ error: err.message || 'Product master sync failed.' });
+    }
+  });
+
+  /**
+   * Sync product master from App Script (MASTER_BARCODE_SCRIPTS_URL) into
+   * the local barcode_product_master Supabase table.
+   * Only meaningful when APP_SCRIPT_FOR_BARCODE=true.
+   */
+  app.post('/api/barcode/sync-barcode-master', async (_req, res) => {
+    const scriptUrl = process.env.MASTER_BARCODE_SCRIPTS_URL;
+    if (!scriptUrl) {
+      return res.status(503).json({ error: 'MASTER_BARCODE_SCRIPTS_URL is not configured.' });
+    }
+    try {
+      const url = new URL(scriptUrl);
+      url.searchParams.set('action', 'barcodeProductMaster');
+      const r = await fetch(url.toString());
+      if (!r.ok) throw new Error(`App Script responded ${r.status}`);
+      const raw = await r.json() as any;
+
+      // Accept several common response shapes from the App Script
+      const rows: any[] =
+        Array.isArray(raw)          ? raw :
+        Array.isArray(raw.data)     ? raw.data :
+        Array.isArray(raw.records)  ? raw.records :
+        Array.isArray(raw.products) ? raw.products :
+        [];
+
+      if (!rows.length) {
+        return res.status(200).json({ message: 'App Script returned 0 rows.', upserted: 0, errors: 0 });
+      }
+
+      const result = await repository.syncBarcodeProductMaster(rows);
+      console.log(`[BFF Barcode Sync] Sync complete: ${result.upserted} upserted, ${result.errors} errors.`);
+      return res.json({ ...result, total: rows.length });
+    } catch (err: any) {
+      console.error('[BFF Barcode Sync] Failed:', err);
+      return res.status(500).json({ error: err.message || 'Barcode product master sync failed.' });
     }
   });
 
@@ -434,6 +535,39 @@ async function startServer() {
     }
   });
 
+  app.get('/api/shipment/batches', async (_req, res) => {
+    const scriptUrl = process.env.APP_SCRIPTS_URL;
+    if (!scriptUrl) return res.status(503).json({ error: 'APP_SCRIPTS_URL not configured.' });
+    try {
+      const url = new URL(scriptUrl);
+      url.searchParams.set('action', 'getBatches');
+      const r = await fetch(url.toString());
+      if (!r.ok) throw new Error(`App Script responded ${r.status}`);
+      const data = await r.json();
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch batches.' });
+    }
+  });
+
+  app.get('/api/shipment/batch-detail', async (req, res) => {
+    const batchId = (req.query.batch_id || '').toString().trim();
+    if (!batchId) return res.status(400).json({ error: 'batch_id is required.' });
+    const scriptUrl = process.env.APP_SCRIPTS_URL;
+    if (!scriptUrl) return res.status(503).json({ error: 'APP_SCRIPTS_URL not configured.' });
+    try {
+      const url = new URL(scriptUrl);
+      url.searchParams.set('action', 'getBatchDetails');
+      url.searchParams.set('batchId', batchId);
+      const r = await fetch(url.toString());
+      if (!r.ok) throw new Error(`App Script responded ${r.status}`);
+      const data = await r.json();
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch batch detail.' });
+    }
+  });
+
   app.get('/api/production-order/search', async (req, res) => {
     const code = (req.query.code || '').toString().trim();
     if (!code) return res.status(400).json({ error: 'code query parameter is required.' });
@@ -521,7 +655,8 @@ async function startServer() {
   });
 
   // Startup product master sync — fire-and-forget so server is never blocked
-  if (process.env.CENTRAL_DB_URL) {
+  // Skipped when APP_SCRIPT_FOR_BARCODE=true because the barcode table is the active source.
+  if (process.env.CENTRAL_DB_URL && process.env.APP_SCRIPT_FOR_BARCODE !== 'true') {
     (async () => {
       try {
         console.log('[BFF Server] Running startup product master sync...');

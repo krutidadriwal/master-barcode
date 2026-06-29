@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Printer, History, RefreshCw, CheckCircle2, AlertCircle, Database, Sparkles, BookOpen, FileDown } from 'lucide-react';
+import { Search, Printer, History, RefreshCw, CheckCircle2, AlertCircle, Database, Sparkles, BookOpen, FileDown, Mail, CloudDownload } from 'lucide-react';
 import { Product, BarcodeCache } from '../../../shared/types';
 import { SingleBarcodeValidator } from '../validators';
 import { SINGLE_BARCODE_CONFIG } from '../config';
@@ -8,8 +8,17 @@ import { BarcodePreview } from './BarcodePreview';
 import { PrintableLabelContainer } from './PrintableLabelContainer';
 import { generateSingleBarcodeBatchNo } from '../../../shared/utilities/batchNo';
 import { downloadLabelsPdf } from '../../../shared/utilities/pdfExport';
+import { DuplicateEANModal } from '../../../shared/components/DuplicateEANModal';
+import {
+  isEANUPCSelected,
+  checkEANDuplicate,
+  recordSessionDuplicate,
+  hasSessionDuplicates,
+  sendSessionDuplicateEmail,
+} from '../../../shared/services/EANDuplicateService';
 
 const PDF_ENABLE = import.meta.env.VITE_PDF_ENABLE === 'true';
+const APP_SCRIPT_FOR_BARCODE = import.meta.env.VITE_APP_SCRIPT_FOR_BARCODE === 'true';
 import { BarcodeGeneratorService } from '../../../shared/services/BarcodeGeneratorService';
 
 export function SingleBarcodeForm() {
@@ -31,6 +40,16 @@ export function SingleBarcodeForm() {
 
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   const [isPdfExporting, setIsPdfExporting] = useState<boolean>(false);
+
+  // Barcode product master sync state (Apps Script mode)
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ total: number; upserted: number; errors: number } | null>(null);
+
+  // Duplicate EAN state
+  const [duplicateModal, setDuplicateModal] = useState<{ ean: string; products: Product[] } | null>(null);
+  const [sessionHasDuplicates, setSessionHasDuplicates] = useState<boolean>(() => hasSessionDuplicates());
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
 
   // Load reprint cache and initial database companion catalogs
   useEffect(() => {
@@ -143,21 +162,47 @@ export function SingleBarcodeForm() {
     setError(null);
   };
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
     if (!product) return;
-    const barcodeValue = (product.EANUPC && product.EANUPC.trim() !== '')
-      ? product.EANUPC.trim()
-      : (product.sku && product.sku.trim() !== '' ? product.sku.trim() : '');
-    
+    const ean = product.EANUPC;
+    const useEAN = isEANUPCSelected(ean);
+    const barcodeValue = useEAN ? ean!.trim() : (product.sku?.trim() ?? '');
+
     if (!barcodeValue) {
       setError('A barcode or SKU value is required to print a label.');
       return;
     }
-    
-    // Trigger native printing instantly
-    setTimeout(() => {
-      window.print();
-    }, 50);
+
+    // Only check for duplicates when EANUPC is the value being printed
+    if (useEAN) {
+      try {
+        const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(ean!.trim());
+        if (isDuplicate) {
+          recordSessionDuplicate({
+            ean: ean!.trim(),
+            affectedProducts: dupeProducts.map(p => ({ sku: p.sku, productName: p.product_name })),
+            timestamp: new Date().toISOString(),
+            module: 'Single Barcode Generator',
+          });
+          setSessionHasDuplicates(true);
+          setDuplicateModal({ ean: ean!.trim(), products: dupeProducts });
+          return; // Block print
+        }
+      } catch (err) {
+        console.error('[EAN Duplicate Check] Failed:', err);
+        // Non-blocking: if the check itself fails, allow print and log
+      }
+    }
+
+    setTimeout(() => window.print(), 50);
+  };
+
+  const handleEndSession = async () => {
+    setEmailSending(true);
+    await sendSessionDuplicateEmail('Single Barcode Generator');
+    setEmailSending(false);
+    setEmailSent(true);
+    setTimeout(() => setEmailSent(false), 4000);
   };
 
   const handleDownloadPdf = async () => {
@@ -173,6 +218,23 @@ export function SingleBarcodeForm() {
     }
   };
 
+  const handleSyncBarcodeMaster = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch('/api/barcode/sync-barcode-master', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sync failed.');
+      setSyncResult({ total: data.total ?? 0, upserted: data.upserted ?? 0, errors: data.errors ?? 0 });
+      await refreshCatalogList();
+    } catch (err: any) {
+      setSyncResult({ total: 0, upserted: 0, errors: -1 });
+      console.error('[Sync Barcode Master]', err);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   // Quick select items from auxiliary list
   const selectCatalogProduct = (p: Product) => {
     isSelectedOrManualAction.current = true;
@@ -185,7 +247,47 @@ export function SingleBarcodeForm() {
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-12">
-      
+
+      {/* Duplicate EAN session banner */}
+      {sessionHasDuplicates && (
+        <div className="bg-red-900/20 border border-red-500/30 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-xs text-red-300">
+            <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+            <span className="font-semibold">Duplicate EANs detected this session.</span>
+            <span className="text-red-400/80">End session to send escalation email to kruti@cubelelo.com.</span>
+          </div>
+          <button
+            onClick={handleEndSession}
+            disabled={emailSending || emailSent}
+            className="flex items-center gap-1.5 bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer shrink-0"
+          >
+            <Mail className="h-3.5 w-3.5" />
+            {emailSent ? 'Email Sent!' : emailSending ? 'Sending…' : 'End Session & Report'}
+          </button>
+        </div>
+      )}
+
+      {/* Sync result banner */}
+      {syncResult && APP_SCRIPT_FOR_BARCODE && (
+        <div className={`border rounded-xl px-4 py-3 flex items-center justify-between gap-4 ${syncResult.errors === -1 ? 'bg-red-900/20 border-red-500/30 text-red-300' : 'bg-emerald-900/20 border-emerald-500/30 text-emerald-300'}`}>
+          <div className="flex items-center gap-2 text-xs">
+            {syncResult.errors === -1 ? (
+              <>
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                <span className="font-semibold">Sync failed — check server logs.</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                <span className="font-semibold">Sync Completed Successfully.</span>
+                <span className="text-emerald-400/70">Records Fetched: {syncResult.total} · Upserted: {syncResult.upserted} · Errors: {syncResult.errors}</span>
+              </>
+            )}
+          </div>
+          <button onClick={() => setSyncResult(null)} className="text-xs text-slate-400 hover:text-white cursor-pointer shrink-0">Dismiss</button>
+        </div>
+      )}
+
       {/* Search Bar & Primary Actions Panel */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
         <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 border-b border-slate-800/60 pb-4">
@@ -222,6 +324,19 @@ export function SingleBarcodeForm() {
               <Database className="h-4 w-4" />
               Database Cheat-sheet
             </button>
+
+            {/* Sync Product Master — only shown in Apps Script mode */}
+            {APP_SCRIPT_FOR_BARCODE && (
+              <button
+                onClick={handleSyncBarcodeMaster}
+                disabled={syncing}
+                className="flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 text-emerald-400 border border-emerald-500/30 px-3.5 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition cursor-pointer disabled:cursor-not-allowed"
+                title="Fetch latest product data from EE Product Master sheet"
+              >
+                <CloudDownload className={`h-4 w-4 ${syncing ? 'animate-bounce' : ''}`} />
+                {syncing ? 'Syncing…' : 'Sync Product Master'}
+              </button>
+            )}
 
           </div>
         </div>
@@ -495,6 +610,15 @@ export function SingleBarcodeForm() {
           product={product}
           quantity={quantity}
           batchNo={generateSingleBarcodeBatchNo()}
+        />
+      )}
+
+      {/* Duplicate EAN blocking modal */}
+      {duplicateModal && (
+        <DuplicateEANModal
+          ean={duplicateModal.ean}
+          products={duplicateModal.products}
+          onClose={() => setDuplicateModal(null)}
         />
       )}
 

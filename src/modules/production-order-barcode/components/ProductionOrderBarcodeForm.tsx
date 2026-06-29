@@ -1,13 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Search, RefreshCw, CheckCircle2, AlertCircle, XCircle,
-  Printer, ClipboardList, ChevronRight, FileDown, CloudDownload
+  Printer, ClipboardList, ChevronRight, FileDown, CloudDownload, Mail
 } from 'lucide-react';
 import { Product, ProductionOrderRow } from '../../../shared/types';
 import { BarcodePreview } from '../../single-barcode-generator/components/BarcodePreview';
 import { PrintableLabelContainer } from '../../single-barcode-generator/components/PrintableLabelContainer';
 import { SINGLE_BARCODE_CONFIG } from '../../single-barcode-generator/config';
 import { downloadLabelsPdf } from '../../../shared/utilities/pdfExport';
+import { DuplicateEANModal } from '../../../shared/components/DuplicateEANModal';
+import {
+  isEANUPCSelected,
+  checkEANDuplicate,
+  recordSessionDuplicate,
+  hasSessionDuplicates,
+  sendSessionDuplicateEmail,
+} from '../../../shared/services/EANDuplicateService';
 
 const PDF_ENABLE = import.meta.env.VITE_PDF_ENABLE === 'true';
 
@@ -102,6 +110,12 @@ export function ProductionOrderBarcodeForm() {
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Duplicate EAN state
+  const [duplicateModal, setDuplicateModal] = useState<{ ean: string; products: Product[] } | null>(null);
+  const [sessionHasDuplicates, setSessionHasDuplicates] = useState<boolean>(() => hasSessionDuplicates());
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
+
   // Auto-search on short code input with debounce
   useEffect(() => {
     const q = shortCode.trim();
@@ -191,9 +205,30 @@ export function ProductionOrderBarcodeForm() {
   };
 
   const handlePrint = async () => {
-    if (!canPrint) return;
+    if (!canPrint || !productData) return;
 
-    // Trigger PDF download first (if enabled), then native print
+    const ean = productData.EANUPC;
+    const useEAN = isEANUPCSelected(ean);
+
+    if (useEAN) {
+      try {
+        const { isDuplicate, products: dupeProducts } = await checkEANDuplicate(ean!.trim());
+        if (isDuplicate) {
+          recordSessionDuplicate({
+            ean: ean!.trim(),
+            affectedProducts: dupeProducts.map(p => ({ sku: p.sku, productName: p.product_name })),
+            timestamp: new Date().toISOString(),
+            module: 'Production Order Barcode',
+          });
+          setSessionHasDuplicates(true);
+          setDuplicateModal({ ean: ean!.trim(), products: dupeProducts });
+          return; // Block print
+        }
+      } catch (err) {
+        console.error('[EAN Duplicate Check] Failed:', err);
+      }
+    }
+
     if (PDF_ENABLE && pdfContainerRef.current) {
       setIsPdfExporting(true);
       try {
@@ -210,6 +245,14 @@ export function ProductionOrderBarcodeForm() {
     }
 
     setTimeout(() => window.print(), 50);
+  };
+
+  const handleEndSession = async () => {
+    setEmailSending(true);
+    await sendSessionDuplicateEmail('Production Order Barcode');
+    setEmailSending(false);
+    setEmailSent(true);
+    setTimeout(() => setEmailSent(false), 4000);
   };
 
   const handleDownloadPdfOnly = async () => {
@@ -237,6 +280,26 @@ export function ProductionOrderBarcodeForm() {
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-12">
+
+      {/* Duplicate EAN session banner */}
+      {sessionHasDuplicates && (
+        <div className="bg-red-900/20 border border-red-500/30 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-xs text-red-300">
+            <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+            <span className="font-semibold">Duplicate EANs detected this session.</span>
+            <span className="text-red-400/80">End session to send escalation email to kruti@cubelelo.com.</span>
+          </div>
+          <button
+            onClick={handleEndSession}
+            disabled={emailSending || emailSent}
+            className="flex items-center gap-1.5 bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer shrink-0"
+          >
+            <Mail className="h-3.5 w-3.5" />
+            {emailSent ? 'Email Sent!' : emailSending ? 'Sending…' : 'End Session & Report'}
+          </button>
+        </div>
+      )}
+
 
       {/* Header & Search Panel */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
@@ -586,6 +649,15 @@ export function ProductionOrderBarcodeForm() {
       {/* Native print portal */}
       {printProduct && quantity > 0 && (
         <PrintableLabelContainer product={printProduct} quantity={quantity} />
+      )}
+
+      {/* Duplicate EAN blocking modal */}
+      {duplicateModal && (
+        <DuplicateEANModal
+          ean={duplicateModal.ean}
+          products={duplicateModal.products}
+          onClose={() => setDuplicateModal(null)}
+        />
       )}
     </div>
   );

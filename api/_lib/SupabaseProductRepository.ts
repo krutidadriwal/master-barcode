@@ -2,40 +2,46 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Pool } from 'pg';
 import { Product } from './types.js';
 
-const TABLE = '"EasyEcomProductMaster"';
+// ── Table identifiers ────────────────────────────────────────────────────────
+
+/** Central DB table (quoted because of mixed case) */
+const CENTRAL_TABLE = '"EasyEcomProductMaster"';
+/** Local Supabase table populated by the App Script sync */
+const BARCODE_TABLE = 'barcode_product_master';
 
 export class SupabaseProductRepository {
   private supabaseClient: SupabaseClient | null = null;
   private pgPool: Pool | null = null;
   private initializedPg = false;
+  private initializedBarcodeTable = false;
 
   private mockProducts: Product[] = [];
 
   constructor() {
-    const dbUrl = process.env.DATABASE_URL;
+    const dbUrl  = process.env.DATABASE_URL;
     const pgHost = process.env.PGHOST;
 
     if (dbUrl || pgHost) {
       try {
-        console.log("[BFF] PostgreSQL direct database connection detected. Initializing pg Pool...");
+        console.log('[BFF] PostgreSQL direct database connection detected. Initializing pg Pool...');
         if (dbUrl) {
           this.pgPool = new Pool({
             connectionString: dbUrl,
-            ssl: dbUrl.includes('supabase.co') ? { rejectUnauthorized: false } : undefined
+            ssl: dbUrl.includes('supabase.co') ? { rejectUnauthorized: false } : undefined,
           });
         } else {
           this.pgPool = new Pool({
-            host: pgHost,
-            port: parseInt(process.env.PGPORT || '5432'),
+            host:     pgHost,
+            port:     parseInt(process.env.PGPORT || '5432'),
             database: process.env.PGDATABASE || 'postgres',
-            user: process.env.PGUSER || 'postgres',
+            user:     process.env.PGUSER     || 'postgres',
             password: process.env.PGPASSWORD,
-            ssl: (pgHost && pgHost.includes('supabase.co')) ? { rejectUnauthorized: false } : undefined
+            ssl: (pgHost && pgHost.includes('supabase.co')) ? { rejectUnauthorized: false } : undefined,
           });
         }
-        console.log("[BFF] PostgreSQL direct database connection pool created.");
+        console.log('[BFF] PostgreSQL direct database connection pool created.');
       } catch (err) {
-        console.error("[BFF] Failed to initialize PostgreSQL pool connection:", err);
+        console.error('[BFF] Failed to initialize PostgreSQL pool connection:', err);
       }
     }
 
@@ -45,27 +51,34 @@ export class SupabaseProductRepository {
     if (supabaseUrl && supabaseKey && !this.pgPool) {
       try {
         this.supabaseClient = createClient(supabaseUrl, supabaseKey);
-        console.log("[BFF] Supabase REST API client successfully initialized.");
+        console.log('[BFF] Supabase REST API client successfully initialized.');
       } catch (err) {
-        console.error("[BFF] Failed to construct Supabase REST client:", err);
+        console.error('[BFF] Failed to construct Supabase REST client:', err);
       }
     }
 
     if (!this.pgPool && !this.supabaseClient) {
-      console.log("[BFF] No database keys present. Running in local high-performance persistent in-memory sandbox mode.");
+      console.log('[BFF] No database keys present. Running in local high-performance persistent in-memory sandbox mode.');
     }
   }
 
+  // ── Feature flag ──────────────────────────────────────────────────────────
+
+  private get useBarcodeTable(): boolean {
+    return process.env.APP_SCRIPT_FOR_BARCODE === 'true';
+  }
+
+  // ── Schema helpers ────────────────────────────────────────────────────────
+
   private async ensurePgTable(): Promise<void> {
     if (!this.pgPool || this.initializedPg) return;
-
+    this.initializedPg = true;
     try {
-      this.initializedPg = true;
       const client = await this.pgPool.connect();
       try {
-        console.log("[BFF] Syncing schema: verifying EasyEcomProductMaster table exists...");
+        console.log('[BFF] Syncing schema: verifying EasyEcomProductMaster table exists...');
         await client.query(`
-          CREATE TABLE IF NOT EXISTS ${TABLE} (
+          CREATE TABLE IF NOT EXISTS ${CENTRAL_TABLE} (
             id VARCHAR(200) PRIMARY KEY,
             product_id VARCHAR(200) UNIQUE NOT NULL,
             sku VARCHAR(200) UNIQUE NOT NULL,
@@ -80,49 +93,127 @@ export class SupabaseProductRepository {
             created_at TIMESTAMPTZ,
             updated_at TIMESTAMPTZ
           );
-          CREATE INDEX IF NOT EXISTS idx_epm_sku ON ${TABLE} (LOWER(sku));
-          CREATE INDEX IF NOT EXISTS idx_epm_product_id ON ${TABLE} (product_id);
-          CREATE INDEX IF NOT EXISTS idx_epm_eanupc ON ${TABLE} (LOWER("EANUPC"));
-          CREATE INDEX IF NOT EXISTS idx_epm_accounting_sku ON ${TABLE} (LOWER(accounting_sku));
+          CREATE INDEX IF NOT EXISTS idx_epm_sku ON ${CENTRAL_TABLE} (LOWER(sku));
+          CREATE INDEX IF NOT EXISTS idx_epm_product_id ON ${CENTRAL_TABLE} (product_id);
+          CREATE INDEX IF NOT EXISTS idx_epm_eanupc ON ${CENTRAL_TABLE} (LOWER("EANUPC"));
+          CREATE INDEX IF NOT EXISTS idx_epm_accounting_sku ON ${CENTRAL_TABLE} (LOWER(accounting_sku));
         `);
       } finally {
         client.release();
       }
     } catch (err) {
-      console.error("[BFF] Failed to sync database schema:", err);
+      console.error('[BFF] Failed to sync database schema:', err);
     }
   }
 
+  private async ensureBarcodeTable(): Promise<void> {
+    if (!this.pgPool || this.initializedBarcodeTable) return;
+    this.initializedBarcodeTable = true;
+    try {
+      const client = await this.pgPool.connect();
+      try {
+        console.log('[BFF] Syncing schema: verifying barcode_product_master table exists...');
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS ${BARCODE_TABLE} (
+            sku             TEXT PRIMARY KEY,
+            product_id      TEXT,
+            item_name       TEXT NOT NULL DEFAULT '',
+            product_type    TEXT,
+            brand           TEXT,
+            colour          TEXT,
+            brand_id        TEXT,
+            mrp             TEXT NOT NULL DEFAULT '',
+            category_name   TEXT,
+            cost            TEXT,
+            mrp_in_ee       TEXT,
+            model_no        TEXT,
+            ean_upc         TEXT,
+            article_number  TEXT,
+            custom_ean      TEXT,
+            barcode         TEXT,
+            sku_for_barcode TEXT,
+            mom             TEXT,
+            batch_no        TEXT,
+            inventory       TEXT,
+            updated_at      TIMESTAMPTZ,
+            synced_at       TIMESTAMPTZ DEFAULT now()
+          );
+          CREATE INDEX IF NOT EXISTS idx_bpm_sku        ON ${BARCODE_TABLE} (LOWER(sku));
+          CREATE INDEX IF NOT EXISTS idx_bpm_ean_upc    ON ${BARCODE_TABLE} (LOWER(ean_upc));
+          CREATE INDEX IF NOT EXISTS idx_bpm_custom_ean ON ${BARCODE_TABLE} (LOWER(custom_ean));
+          CREATE INDEX IF NOT EXISTS idx_bpm_model_no   ON ${BARCODE_TABLE} (LOWER(model_no));
+          ALTER TABLE ${BARCODE_TABLE} ADD COLUMN IF NOT EXISTS inventory   TEXT;
+          ALTER TABLE ${BARCODE_TABLE} ADD COLUMN IF NOT EXISTS updated_at  TIMESTAMPTZ;
+        `);
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      console.error('[BFF] Failed to ensure barcode_product_master table:', err);
+    }
+  }
+
+  // ── Row mappers ───────────────────────────────────────────────────────────
+
   private rowToProduct(r: any): Product {
     return {
-      id: r.id ? String(r.id) : undefined,
-      product_id: r.product_id || '',
-      sku: r.sku || '',
-      product_name: r.product_name || '',
-      brand: r.brand || undefined,
-      brand_id: r.brand_id != null ? String(r.brand_id) : undefined,
-      mrp: r.mrp || '',
-      model_no: r.model_no || undefined,
-      EANUPC: r.EANUPC || undefined,
-      accounting_sku: r.accounting_sku || undefined,
+      id:                r.id         ? String(r.id) : undefined,
+      product_id:        r.product_id || '',
+      sku:               r.sku        || '',
+      product_name:      r.product_name || '',
+      brand:             r.brand      || undefined,
+      brand_id:          r.brand_id   != null ? String(r.brand_id) : undefined,
+      mrp:               r.mrp        || '',
+      model_no:          r.model_no   || undefined,
+      EANUPC:            r.EANUPC     || undefined,
+      accounting_sku:    r.accounting_sku || undefined,
       product_image_url: r.product_image_url || undefined,
-      created_at: r.created_at || undefined,
-      updated_at: r.updated_at || undefined,
+      created_at:        r.created_at || undefined,
+      updated_at:        r.updated_at || undefined,
     };
   }
+
+  private rowToProductFromBarcodeTable(r: any): Product {
+    // Prefer custom_ean as the EANUPC value if it is non-empty/non-'0'
+    const effectiveEan =
+      r.custom_ean && String(r.custom_ean).trim() && String(r.custom_ean).trim() !== '0'
+        ? String(r.custom_ean).trim()
+        : (r.ean_upc ? String(r.ean_upc).trim() : undefined);
+
+    return {
+      id:             r.sku,
+      product_id:     r.product_id || r.sku || '',
+      sku:            r.sku        || '',
+      product_name:   r.item_name  || '',
+      brand:          r.brand      || undefined,
+      brand_id:       r.brand_id   ? String(r.brand_id) : undefined,
+      mrp:            String(r.mrp || ''),
+      model_no:       r.model_no   || undefined,
+      EANUPC:         effectiveEan || undefined,
+      accounting_sku: r.sku_for_barcode || undefined,
+      created_at:     r.synced_at  || undefined,
+      updated_at:     r.synced_at  || undefined,
+    };
+  }
+
+  // ── searchProduct ─────────────────────────────────────────────────────────
 
   async searchProduct(identifier: string): Promise<Product | null> {
     const query = identifier.trim();
     if (!query) return null;
 
-    // PG: single query, exact SKU match wins via ORDER BY
+    if (this.useBarcodeTable) {
+      return this._searchProductInBarcodeTable(query);
+    }
+
+    // ── Central DB path (existing) ──
     if (this.pgPool) {
       try {
         await this.ensurePgTable();
         const res = await this.pgPool.query(
           `SELECT id, product_id, sku, product_name, brand, brand_id, mrp, model_no,
                   "EANUPC", accounting_sku, product_image_url, created_at, updated_at
-           FROM ${TABLE}
+           FROM ${CENTRAL_TABLE}
            WHERE LOWER(sku) = LOWER($1)
               OR LOWER("EANUPC") = LOWER($1)
               OR LOWER(COALESCE(accounting_sku, '')) = LOWER($1)
@@ -132,17 +223,15 @@ export class SupabaseProductRepository {
            LIMIT 1`,
           [query]
         );
-
         if (res.rows && res.rows.length > 0) {
           console.log(`[BFF Direct PG] [SUCCESS] Fetched product "${query}":`, res.rows[0].sku);
           return this.rowToProduct(res.rows[0]);
         }
       } catch (err) {
-        console.error("[BFF Direct PG] Failed to fetch product:", err);
+        console.error('[BFF Direct PG] Failed to fetch product:', err);
       }
     }
 
-    // Supabase REST: SKU exact match first, EAN/other fallback second
     if (this.supabaseClient) {
       try {
         const skuRes = await this.supabaseClient
@@ -164,11 +253,10 @@ export class SupabaseProductRepository {
           return this.rowToProduct(row);
         }
       } catch (err) {
-        console.error("[BFF REST] Exception querying Supabase client SDK:", err);
+        console.error('[BFF REST] Exception querying Supabase client SDK:', err);
       }
     }
 
-    // Mock in-memory fallback — SKU exact match first
     const q = query.toLowerCase();
     const mockMatch =
       this.mockProducts.find(p => p.sku.toLowerCase() === q) ||
@@ -180,16 +268,70 @@ export class SupabaseProductRepository {
     return mockMatch || null;
   }
 
+  private async _searchProductInBarcodeTable(query: string): Promise<Product | null> {
+    if (this.pgPool) {
+      try {
+        await this.ensureBarcodeTable();
+        const res = await this.pgPool.query(
+          `SELECT * FROM ${BARCODE_TABLE}
+           WHERE LOWER(sku) = LOWER($1)
+              OR LOWER(COALESCE(ean_upc, ''))    = LOWER($1)
+              OR LOWER(COALESCE(custom_ean, '')) = LOWER($1)
+              OR LOWER(COALESCE(model_no, ''))   = LOWER($1)
+              OR LOWER(COALESCE(product_id, '')) = LOWER($1)
+           ORDER BY CASE WHEN LOWER(sku) = LOWER($1) THEN 0 ELSE 1 END
+           LIMIT 1`,
+          [query]
+        );
+        if (res.rows && res.rows.length > 0) {
+          console.log(`[BFF Barcode PG] [SUCCESS] Fetched product "${query}":`, res.rows[0].sku);
+          return this.rowToProductFromBarcodeTable(res.rows[0]);
+        }
+      } catch (err) {
+        console.error('[BFF Barcode PG] Failed to fetch product:', err);
+      }
+    }
+
+    if (this.supabaseClient) {
+      try {
+        const skuRes = await this.supabaseClient
+          .from(BARCODE_TABLE)
+          .select('*')
+          .filter('sku', 'ilike', query)
+          .maybeSingle();
+
+        const row = skuRes.data ?? (
+          await this.supabaseClient
+            .from(BARCODE_TABLE)
+            .select('*')
+            .or(`ean_upc.ilike.${query},custom_ean.ilike.${query},model_no.ilike.${query},product_id.ilike.${query}`)
+            .maybeSingle()
+        ).data;
+
+        if (row) {
+          console.log(`[BFF Barcode REST] [SUCCESS] Fetched product "${query}":`, row.sku);
+          return this.rowToProductFromBarcodeTable(row);
+        }
+      } catch (err) {
+        console.error('[BFF Barcode REST] Failed to fetch product:', err);
+      }
+    }
+
+    return null;
+  }
+
+  // ── addProduct ────────────────────────────────────────────────────────────
+
   async addProduct(input: { sku: string; item_name: string; mrp: string; ean_upc: string; batch_no?: string }): Promise<Product> {
     await this.ensurePgTable();
     const productId = `CUSTOM-${input.sku}`;
-    const now = new Date().toISOString();
+    const now       = new Date().toISOString();
 
     if (this.pgPool) {
       const client = await this.pgPool.connect();
       try {
         const res = await client.query(
-          `INSERT INTO ${TABLE}
+          `INSERT INTO ${CENTRAL_TABLE}
              (id, product_id, sku, product_name, mrp, "EANUPC", model_no, created_at, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
            ON CONFLICT (sku) DO UPDATE SET
@@ -223,7 +365,6 @@ export class SupabaseProductRepository {
       return this.rowToProduct(data);
     }
 
-    // Mock fallback
     const product: Product = {
       id: productId, product_id: productId, sku: input.sku,
       product_name: input.item_name, mrp: input.mrp,
@@ -234,22 +375,30 @@ export class SupabaseProductRepository {
     return product;
   }
 
-  async getAllProducts(): Promise<Product[]> {
+  // ── findProductsByEANUPC ──────────────────────────────────────────────────
+
+  async findProductsByEANUPC(ean: string): Promise<Product[]> {
+    const query = ean.trim();
+    if (!query) return [];
+
+    if (this.useBarcodeTable) {
+      return this._findByEANInBarcodeTable(query);
+    }
+
+    // ── Central DB path ──
     if (this.pgPool) {
       try {
         await this.ensurePgTable();
         const res = await this.pgPool.query(
           `SELECT id, product_id, sku, product_name, brand, brand_id, mrp, model_no,
                   "EANUPC", accounting_sku, product_image_url, created_at, updated_at
-           FROM ${TABLE}
-           ORDER BY product_name ASC`
+           FROM ${CENTRAL_TABLE}
+           WHERE LOWER("EANUPC") = LOWER($1)`,
+          [query]
         );
-        if (res.rows) {
-          console.log(`[BFF Direct PG] [SUCCESS] Fetched all ${res.rows.length} products.`);
-          return res.rows.map((r: any) => this.rowToProduct(r));
-        }
+        return (res.rows || []).map((r: any) => this.rowToProduct(r));
       } catch (err) {
-        console.error("[BFF Direct PG] Failed to fetch all products:", err);
+        console.error('[BFF Direct PG] findProductsByEANUPC failed:', err);
       }
     }
 
@@ -258,19 +407,214 @@ export class SupabaseProductRepository {
         const { data, error } = await this.supabaseClient
           .from('EasyEcomProductMaster')
           .select('id, product_id, sku, product_name, brand, brand_id, mrp, model_no, EANUPC, accounting_sku, product_image_url, created_at, updated_at')
-          .order('product_name', { ascending: true });
-
-        if (error) {
-          console.error("[BFF REST] Supabase REST query all products exception:", error);
-        } else if (data) {
-          console.log(`[BFF REST] [SUCCESS] Fetched all ${data.length} products.`);
+          .ilike('EANUPC', query);
+        if (!error && data) {
           return data.map((r: any) => this.rowToProduct(r));
         }
       } catch (err) {
-        console.error("[BFF REST] Exception querying all products:", err);
+        console.error('[BFF REST] findProductsByEANUPC failed:', err);
+      }
+    }
+
+    return this.mockProducts.filter(p => (p.EANUPC || '').toLowerCase() === query.toLowerCase());
+  }
+
+  private async _findByEANInBarcodeTable(query: string): Promise<Product[]> {
+    if (this.pgPool) {
+      try {
+        await this.ensureBarcodeTable();
+        const res = await this.pgPool.query(
+          `SELECT * FROM ${BARCODE_TABLE}
+           WHERE LOWER(COALESCE(ean_upc, ''))    = LOWER($1)
+              OR LOWER(COALESCE(custom_ean, '')) = LOWER($1)`,
+          [query]
+        );
+        return (res.rows || []).map((r: any) => this.rowToProductFromBarcodeTable(r));
+      } catch (err) {
+        console.error('[BFF Barcode PG] findProductsByEANUPC failed:', err);
+      }
+    }
+
+    if (this.supabaseClient) {
+      try {
+        const { data, error } = await this.supabaseClient
+          .from(BARCODE_TABLE)
+          .select('*')
+          .or(`ean_upc.ilike.${query},custom_ean.ilike.${query}`);
+        if (!error && data) {
+          return data.map((r: any) => this.rowToProductFromBarcodeTable(r));
+        }
+      } catch (err) {
+        console.error('[BFF Barcode REST] findProductsByEANUPC failed:', err);
+      }
+    }
+
+    return [];
+  }
+
+  // ── getAllProducts ────────────────────────────────────────────────────────
+
+  async getAllProducts(): Promise<Product[]> {
+    if (this.pgPool) {
+      try {
+        const table    = this.useBarcodeTable ? BARCODE_TABLE : CENTRAL_TABLE;
+        const orderCol = this.useBarcodeTable ? 'item_name' : 'product_name';
+        await (this.useBarcodeTable ? this.ensureBarcodeTable() : this.ensurePgTable());
+        const res = await this.pgPool.query(
+          `SELECT * FROM ${table} ORDER BY ${orderCol} ASC`
+        );
+        if (res.rows) {
+          console.log(`[BFF Direct PG] [SUCCESS] Fetched all ${res.rows.length} products.`);
+          return this.useBarcodeTable
+            ? res.rows.map((r: any) => this.rowToProductFromBarcodeTable(r))
+            : res.rows.map((r: any) => this.rowToProduct(r));
+        }
+      } catch (err) {
+        console.error('[BFF Direct PG] Failed to fetch all products:', err);
+      }
+    }
+
+    if (this.supabaseClient) {
+      try {
+        const tableName = this.useBarcodeTable ? BARCODE_TABLE : 'EasyEcomProductMaster';
+        const orderCol  = this.useBarcodeTable ? 'item_name' : 'product_name';
+        const { data, error } = await this.supabaseClient
+          .from(tableName)
+          .select('*')
+          .order(orderCol, { ascending: true });
+
+        if (error) {
+          console.error('[BFF REST] Supabase REST query all products exception:', error);
+        } else if (data) {
+          console.log(`[BFF REST] [SUCCESS] Fetched all ${data.length} products.`);
+          return this.useBarcodeTable
+            ? data.map((r: any) => this.rowToProductFromBarcodeTable(r))
+            : data.map((r: any) => this.rowToProduct(r));
+        }
+      } catch (err) {
+        console.error('[BFF REST] Exception querying all products:', err);
       }
     }
 
     return this.mockProducts;
+  }
+
+  // ── syncBarcodeProductMaster ──────────────────────────────────────────────
+  // Called by the /api/barcode/sync-barcode-master endpoint.
+  // Accepts raw rows from the App Script response and upserts them into
+  // barcode_product_master. Handles both original header names ("EAN/UPC")
+  // and snake_case variants ("ean_upc") so the App Script can return either.
+
+  async syncBarcodeProductMaster(rawRows: any[]): Promise<{ upserted: number; errors: number }> {
+    if (!rawRows.length) return { upserted: 0, errors: 0 };
+    await this.ensureBarcodeTable();
+
+    const now     = new Date().toISOString();
+    const pick    = (r: any, ...keys: string[]) => {
+      for (const k of keys) {
+        const v = r[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+      }
+      return null;
+    };
+
+    const normalized = rawRows
+      .map(r => ({
+        sku:             pick(r, 'SKU', 'sku'),
+        product_id:      pick(r, 'Product ID', 'product_id'),
+        item_name:       pick(r, 'Item Name', 'item_name')    ?? '',
+        product_type:    pick(r, 'Product Type', 'product_type'),
+        brand:           pick(r, 'Brand', 'brand'),
+        colour:          pick(r, 'Colour', 'colour'),
+        brand_id:        pick(r, 'Brand Id', 'brand_id'),
+        mrp:             pick(r, 'MRP', 'mrp')                ?? '',
+        category_name:   pick(r, 'Category Name', 'category_name'),
+        cost:            pick(r, 'Cost', 'cost'),
+        mrp_in_ee:       pick(r, 'MRP in EE (changes for event POS)', 'mrp_in_ee'),
+        model_no:        pick(r, 'Model No', 'model_no'),
+        ean_upc:         pick(r, 'EAN/UPC', 'ean_upc'),
+        article_number:  pick(r, 'Article Number', 'article_number'),
+        custom_ean:      pick(r, 'Custom EAN', 'custom_ean'),
+        barcode:         pick(r, 'Barcode', 'barcode'),
+        sku_for_barcode: pick(r, 'SKU for Barcode', 'sku_for_barcode'),
+        mom:             pick(r, 'MOM', 'mom'),
+        batch_no:        pick(r, 'Batch No.', 'Batch No', 'batch_no'),
+        inventory:       pick(r, 'Inventory', 'inventory'),
+        updated_at:      pick(r, 'Updated At', 'updated_at') ? new Date(pick(r, 'Updated At', 'updated_at')!).toISOString() : null,
+        synced_at:       now,
+      }))
+      .filter(r => r.sku);  // skip rows with no SKU
+
+    let upserted = 0;
+    let errors   = 0;
+
+    if (this.pgPool) {
+      const BATCH = 500;
+      for (let i = 0; i < normalized.length; i += BATCH) {
+        const chunk = normalized.slice(i, i + BATCH);
+        const client = await this.pgPool.connect();
+        try {
+          await client.query('BEGIN');
+          for (const row of chunk) {
+            await client.query(
+              `INSERT INTO ${BARCODE_TABLE}
+                 (sku, product_id, item_name, product_type, brand, colour, brand_id,
+                  mrp, category_name, cost, mrp_in_ee, model_no, ean_upc, article_number,
+                  custom_ean, barcode, sku_for_barcode, mom, batch_no, inventory, updated_at, synced_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+               ON CONFLICT (sku) DO UPDATE SET
+                 product_id=EXCLUDED.product_id, item_name=EXCLUDED.item_name,
+                 product_type=EXCLUDED.product_type, brand=EXCLUDED.brand,
+                 colour=EXCLUDED.colour, brand_id=EXCLUDED.brand_id, mrp=EXCLUDED.mrp,
+                 category_name=EXCLUDED.category_name, cost=EXCLUDED.cost,
+                 mrp_in_ee=EXCLUDED.mrp_in_ee, model_no=EXCLUDED.model_no,
+                 ean_upc=EXCLUDED.ean_upc, article_number=EXCLUDED.article_number,
+                 custom_ean=EXCLUDED.custom_ean, barcode=EXCLUDED.barcode,
+                 sku_for_barcode=EXCLUDED.sku_for_barcode, mom=EXCLUDED.mom,
+                 batch_no=EXCLUDED.batch_no, inventory=EXCLUDED.inventory,
+                 updated_at=EXCLUDED.updated_at, synced_at=EXCLUDED.synced_at`,
+              [
+                row.sku, row.product_id, row.item_name, row.product_type, row.brand,
+                row.colour, row.brand_id, row.mrp, row.category_name, row.cost,
+                row.mrp_in_ee, row.model_no, row.ean_upc, row.article_number,
+                row.custom_ean, row.barcode, row.sku_for_barcode, row.mom,
+                row.batch_no, row.inventory, row.updated_at, row.synced_at,
+              ]
+            );
+            upserted++;
+          }
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          console.error(`[syncBarcodeProductMaster] Batch ${i}–${i + chunk.length} failed:`, err);
+          errors += chunk.length;
+          upserted -= chunk.length;
+        } finally {
+          client.release();
+        }
+      }
+      return { upserted, errors };
+    }
+
+    if (this.supabaseClient) {
+      const BATCH = 500;
+      for (let i = 0; i < normalized.length; i += BATCH) {
+        const chunk = normalized.slice(i, i + BATCH);
+        try {
+          const { error } = await this.supabaseClient
+            .from(BARCODE_TABLE)
+            .upsert(chunk, { onConflict: 'sku' });
+          if (error) throw error;
+          upserted += chunk.length;
+        } catch (err) {
+          console.error(`[syncBarcodeProductMaster] REST batch ${i} failed:`, err);
+          errors += chunk.length;
+        }
+      }
+      return { upserted, errors };
+    }
+
+    console.warn('[syncBarcodeProductMaster] No database connection — sync skipped.');
+    return { upserted: 0, errors: normalized.length };
   }
 }
