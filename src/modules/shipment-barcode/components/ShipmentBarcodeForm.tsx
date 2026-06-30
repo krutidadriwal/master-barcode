@@ -45,10 +45,12 @@ interface Batch {
 }
 
 interface LineItem {
+  line_id: string;
   sku: string;
   item_name: string;
   ean: string;
   incoming_qty: number;
+  scanned_quantity: number;
 }
 
 interface VendorShipment {
@@ -69,9 +71,11 @@ interface BatchDetail {
 }
 
 interface ShipmentLine {
+  line_id: string;
   sku: string;
   item_name: string;
   original_quantity: number;
+  already_received: number;
 }
 
 interface ScanTapeEntry {
@@ -143,6 +147,19 @@ export function ShipmentBarcodeForm() {
 
   useEffect(() => { loadBatches(); }, []);
 
+  // ── Browser back button support ───────────────────────────────────────────
+  // When we enter scanning view we push a history entry so the browser back
+  // button navigates back to the browse view instead of leaving the page.
+
+  useEffect(() => {
+    const handler = () => {
+      setView('browse');
+      setLocked(false);
+    };
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, []);
+
   // ── scanMode persistence ──────────────────────────────────────────────────
 
   useEffect(() => {
@@ -184,7 +201,7 @@ export function ShipmentBarcodeForm() {
     const handler = (e: KeyboardEvent) => {
       const el = document.activeElement;
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
-        if (el !== inputRef.current) return;
+        return; // Let native inputs handle their own keystrokes; form onSubmit handles Enter in our input
       }
       if (['Tab','Escape','Shift','Control','Alt','Meta','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown','Home','End'].includes(e.key)) return;
       if (e.ctrlKey || e.metaKey) return;
@@ -200,6 +217,10 @@ export function ShipmentBarcodeForm() {
       }
     };
     const pasteHandler = (e: ClipboardEvent) => {
+      const el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+        return; // Let native inputs handle paste
+      }
       const text = e.clipboardData?.getData('text') || '';
       if (!text.trim()) return;
       e.preventDefault();
@@ -243,10 +264,17 @@ export function ShipmentBarcodeForm() {
 
   // ── Data loaders ─────────────────────────────────────────────────────────
 
-  const loadBatches = async () => {
+  const loadBatches = async (syncFirst = false) => {
     setBatchesLoading(true);
     setBatchesError(null);
     try {
+      if (syncFirst) {
+        const syncRes = await fetch('/api/shipment/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!syncRes.ok) {
+          const e = await syncRes.json().catch(() => ({}));
+          console.warn('[Shipment] Sync warning:', e.error || syncRes.status);
+        }
+      }
       const res = await fetch('/api/shipment/batches');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -304,18 +332,26 @@ export function ShipmentBarcodeForm() {
 
   const startScanning = (shipment: VendorShipment) => {
     const lines: ShipmentLine[] = (shipment.line_items || []).map(l => ({
-      sku: l.sku,
-      item_name: l.item_name,
+      line_id:          l.line_id,
+      sku:              l.sku,
+      item_name:        l.item_name,
       original_quantity: l.incoming_qty,
+      already_received: l.scanned_quantity || 0,
     }));
+    // Pre-populate counts with quantities already recorded in Supabase
+    const preloaded: Record<string, number> = {};
+    for (const l of lines) {
+      if (l.already_received > 0) preloaded[l.sku] = l.already_received;
+    }
     setActiveShipmentId(shipment.shipment_id);
     setActiveShipmentLines(lines);
-    setCountingQty({});
+    setCountingQty(preloaded);
     setExcessQtyFrequency({});
     setNoProductData([]);
     setScanTape([]);
     setActivePrintBatch([]);
     setLocked(false);
+    history.pushState({ shipmentView: 'scanning' }, '');
     setView('scanning');
     setScanStatus({
       type: 'idle',
@@ -324,8 +360,12 @@ export function ShipmentBarcodeForm() {
   };
 
   const backToBrowse = () => {
-    setView('browse');
-    setLocked(false);
+    if (history.state?.shipmentView === 'scanning') {
+      history.back(); // fires popstate → handler sets view + locked
+    } else {
+      setView('browse');
+      setLocked(false);
+    }
   };
 
   // ── Core scan engine ──────────────────────────────────────────────────────
@@ -387,6 +427,12 @@ export function ShipmentBarcodeForm() {
       if (shipmentLine) {
         const nextCount = (countingQty[product.sku] || 0) + 1;
         setCountingQty(prev => ({ ...prev, [product.sku]: nextCount }));
+        // Persist to Supabase (fire-and-forget — UI already updated above)
+        fetch('/api/shipment/scan-line', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ line_id: shipmentLine.line_id }),
+        }).catch(e => console.warn('[Scan] Persist failed:', e));
         const isExcess = nextCount > shipmentLine.original_quantity;
         if (isExcess) {
           setExcessQtyFrequency(prev => ({ ...prev, [product.sku]: nextCount - shipmentLine.original_quantity }));
@@ -480,7 +526,7 @@ export function ShipmentBarcodeForm() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-2.5" style={{ zoom: 1.25 }}>
 
       {/* ── Header Bar ── */}
       <div className="flex items-center justify-between bg-slate-900 border border-slate-800 px-4 py-2.5 rounded-xl gap-4">
@@ -507,7 +553,7 @@ export function ShipmentBarcodeForm() {
         <div className="flex items-center gap-2.5 shrink-0">
           {view === 'browse' && (
             <button
-              onClick={loadBatches}
+              onClick={() => loadBatches(true)}
               disabled={batchesLoading}
               className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-semibold py-1.5 px-3 rounded-lg transition cursor-pointer select-none whitespace-nowrap"
             >
@@ -656,26 +702,36 @@ export function ShipmentBarcodeForm() {
                                 className={`border-b border-slate-800/60 last:border-0 ${isHighlighted ? 'ring-1 ring-inset ring-indigo-500/30' : ''}`}
                               >
                                 {/* Shipment row */}
-                                <button
-                                  onClick={() => setExpandedShipmentId(prev => prev === shipment.shipment_id ? null : shipment.shipment_id)}
-                                  className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-slate-800/30 transition cursor-pointer text-left"
-                                >
-                                  <span className="text-slate-600 shrink-0">
-                                    {shipIsExpanded
-                                      ? <ChevronDown className="h-3 w-3" />
-                                      : <ChevronRight className="h-3 w-3" />
-                                    }
-                                  </span>
-                                  <span className="font-mono font-bold text-xs text-indigo-300">{shipment.shipment_id}</span>
-                                  <span className="text-[10px] text-slate-500 font-mono">{shipment.vendor_code}</span>
-                                  {shipment.invoice_no && (
-                                    <span className="text-[10px] text-slate-600">Invoice: {shipment.invoice_no}</span>
-                                  )}
-                                  <div className="flex-1" />
-                                  <span className="text-[10px] text-slate-500">
-                                    {shipment.carton_count} ctn · {(shipment.total_units ?? 0).toLocaleString()} units
-                                  </span>
-                                </button>
+                                <div className="flex items-center gap-3 px-5 py-2.5 hover:bg-slate-800/30 transition">
+                                  {/* Toggle expand — click anywhere on the left portion */}
+                                  <button
+                                    onClick={() => setExpandedShipmentId(prev => prev === shipment.shipment_id ? null : shipment.shipment_id)}
+                                    className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer text-left"
+                                  >
+                                    <span className="text-slate-600 shrink-0">
+                                      {shipIsExpanded
+                                        ? <ChevronDown className="h-3 w-3" />
+                                        : <ChevronRight className="h-3 w-3" />
+                                      }
+                                    </span>
+                                    <span className="font-mono font-bold text-xs text-indigo-300">{shipment.shipment_id}</span>
+                                    <span className="text-[10px] text-slate-500 font-mono">{shipment.vendor_code}</span>
+                                    {shipment.invoice_no && (
+                                      <span className="text-[10px] text-slate-600">Invoice: {shipment.invoice_no}</span>
+                                    )}
+                                    <span className="text-[10px] text-slate-500 ml-2">
+                                      {shipment.carton_count} ctn · {(shipment.total_units ?? 0).toLocaleString()} units
+                                    </span>
+                                  </button>
+                                  {/* Start scanning at shipment level — no SKU expand needed */}
+                                  <button
+                                    onClick={() => startScanning(shipment)}
+                                    className="shrink-0 flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold uppercase tracking-wider py-1.5 px-3 rounded-lg transition cursor-pointer select-none"
+                                  >
+                                    <Terminal className="h-3 w-3" />
+                                    Scan
+                                  </button>
+                                </div>
 
                                 {/* Expanded: SKU list */}
                                 {shipIsExpanded && (

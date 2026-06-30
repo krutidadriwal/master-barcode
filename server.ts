@@ -7,6 +7,7 @@ import nodemailer from 'nodemailer';
 import { createServer as createViteServer } from 'vite';
 import { SupabaseProductRepository } from './api/_lib/SupabaseProductRepository';
 import { SupabaseShipmentRepository } from './api/_lib/SupabaseShipmentRepository';
+import { SupabaseVendorShipmentRepository } from './api/_lib/SupabaseVendorShipmentRepository';
 import { ProductionOrderRepository } from './api/_lib/ProductionOrderRepository';
 import { ProductionOrderGSheetSyncService } from './api/_lib/ProductionOrderGSheetSyncService';
 import { EasyEcomProductMasterSyncService } from './api/_lib/EasyEcomProductMasterSyncService';
@@ -30,7 +31,8 @@ async function startServer() {
 
   // Initialize repositories
   const repository = new SupabaseProductRepository();
-  const shipmentRepository = new SupabaseShipmentRepository();
+  void new SupabaseShipmentRepository(); // kept for legacy table compatibility
+  const vendorShipmentRepo = new SupabaseVendorShipmentRepository();
   const poRepository = new SupabasePurchaseOrderRepository();
   const productionOrderRepository = new ProductionOrderRepository();
   const productionOrderSyncService = new ProductionOrderGSheetSyncService();
@@ -262,193 +264,270 @@ async function startServer() {
   /**
    * Fetch all custom shipment list entries from shipment_barcode table.
    */
-  app.get('/api/shipment/list', async (req, res) => {
+  /**
+   * Sync shipment data from Google Sheet → Supabase.
+   * Calls Apps Script action 'sync_shipment_data' which reads Batches,
+   * Vendor_Shipments, and Vendor_Shipment_Lines tabs and returns all rows.
+   * scanned_quantity on existing lines is preserved (not overwritten by sync).
+   */
+  // Writes Supabase scanned_quantity back to the Google Sheet via Apps Script.
+  async function runShipmentWriteback() {
+    const scriptUrl = process.env.APP_SCRIPTS_URL;
+    if (!scriptUrl?.trim()) return;
+    const updates = await vendorShipmentRepo.getScannedQuantitiesForWriteback();
+    if (!updates.length) return;
+    console.log(`[Shipment Writeback] Pushing ${updates.length} line(s) to sheet…`);
+    const r = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'update_scanned_quantities', updates }),
+    });
+    if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
+    const data = await r.json();
+    if (!data.success) throw new Error(data.error || 'Apps Script writeback failed');
+    console.log(`[Shipment Writeback] Done — updated ${data.updated} row(s) in sheet.`);
+  }
+
+  // Hourly writeback to sheet.
+  setInterval(() => {
+    runShipmentWriteback().catch(err =>
+      console.error('[Shipment Writeback] Hourly job error:', err.message)
+    );
+  }, 60 * 60 * 1000);
+
+  // Debug: returns raw Apps Script response without storing to Supabase
+  app.get('/api/shipment/sync-debug', async (_req, res) => {
+    const scriptUrl = process.env.APP_SCRIPTS_URL;
+    if (!scriptUrl?.trim()) return res.status(503).json({ error: 'APP_SCRIPTS_URL not configured.' });
     try {
-      const raw = (req.query.mode as string || 'AIR').toUpperCase();
-      const mode = (raw === 'SEA' ? 'SEA' : 'AIR') as 'AIR' | 'SEA';
-      const items = await shipmentRepository.getAllShipments(mode);
-      return res.json(items);
-    } catch (error: any) {
-      console.error('[BFF API] Get shipment list error:', error);
-      return res.status(500).json({ error: 'Failed to retrieve shipment inventory.' });
+      const r = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync_shipment_data' }),
+      });
+      const data = await r.json();
+      const firstBatch    = (data.batches    || [])[0] || null;
+      const firstShipment = (data.shipments  || [])[0] || null;
+      const firstLine     = (data.lines      || [])[0] || null;
+      return res.json({
+        counts: { batches: data.batches?.length, shipments: data.shipments?.length, lines: data.lines?.length },
+        sample_batch:    firstBatch,
+        sample_shipment: firstShipment,
+        sample_line:     firstLine,
+        batch_keys:    firstBatch    ? Object.keys(firstBatch)    : [],
+        shipment_keys: firstShipment ? Object.keys(firstShipment) : [],
+        line_keys:     firstLine     ? Object.keys(firstLine)     : [],
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/shipment/sync', async (_req, res) => {
+    const scriptUrl = process.env.APP_SCRIPTS_URL;
+    if (!scriptUrl?.trim()) {
+      return res.status(503).json({ error: 'APP_SCRIPTS_URL is not configured.' });
+    }
+    try {
+      console.log('[Shipment Sync] Calling Apps Script sync_shipment_data…');
+      const r = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync_shipment_data' }),
+      });
+      if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
+      const data = await r.json();
+      if (!data.success) throw new Error(data.error || 'Apps Script returned failure');
+
+      const rawBatches:   any[] = data.batches   || [];
+      const rawShipments: any[] = data.shipments  || [];
+      const rawLines:     any[] = data.lines      || [];
+
+      // Map Batches (sheet headers are snake_case)
+      const batches = rawBatches
+        .filter((b: any) => b['batch_id'])
+        .map((b: any) => ({
+          batch_id:          String(b['batch_id']          || '').trim(),
+          status:            String(b['status']            || '').trim() || null,
+          expected_delivery: String(b['expected_delivery'] || '').trim() || null,
+          actual_delivery:   String(b['actual_delivery']   || '').trim() || null,
+          carrier:           String(b['carrier']           || '').trim() || null,
+          remarks:           String(b['remarks']           || '').trim() || null,
+        }));
+
+      // Map Vendor_Shipments (no total_units column — computed from lines below)
+      const shipments = rawShipments
+        .filter((s: any) => s['shipment_id'])
+        .map((s: any) => ({
+          shipment_id:  String(s['shipment_id']  || '').trim(),
+          batch_id:     String(s['batch_id']     || '').trim(),
+          vendor_code:  String(s['vendor_code']  || '').trim() || null,
+          invoice_no:   String(s['invoice_no']   || '').trim() || null,
+          invoice_date: String(s['invoice_date'] || '').trim() || null,
+          carton_count: parseInt(s['carton_count'] || 0, 10) || 0,
+          total_units:  0, // computed below from lines
+        }));
+
+      // Map Vendor_Shipment_Lines (qty column is invoice_qty; line_id comes from sheet)
+      const lines = rawLines
+        .filter((l: any) => l['shipment_id'] && l['sku'])
+        .map((l: any) => {
+          const shipmentId = String(l['shipment_id'] || '').trim();
+          const sku        = String(l['sku']         || '').trim();
+          const sheetLineId = String(l['line_id']   || '').trim();
+          return {
+            line_id:          sheetLineId || `${shipmentId}::${sku}`,
+            shipment_id:      shipmentId,
+            batch_id:         String(l['batch_id']    || '').trim(),
+            vendor_code:      String(l['vendor_code'] || '').trim() || null,
+            sku,
+            item_name:        String(l['item_name']   || sku).trim(),
+            ean:              String(l['ean']         || '').trim() || null,
+            incoming_qty:     parseInt(l['invoice_qty'] || 0, 10) || 0,
+            scanned_quantity: 0, // preserved by syncLines — not overwritten on re-sync
+          };
+        });
+
+      // Compute total_units per shipment from mapped lines
+      const unitsByShipment: Record<string, number> = {};
+      for (const l of lines) unitsByShipment[l.shipment_id] = (unitsByShipment[l.shipment_id] || 0) + l.incoming_qty;
+      for (const s of shipments) s.total_units = unitsByShipment[s.shipment_id] || 0;
+
+      // Must be sequential: lines FK → shipments FK → batches
+      const bCount = await vendorShipmentRepo.syncBatches(batches);
+      const sCount = await vendorShipmentRepo.syncShipments(shipments);
+      const lCount = await vendorShipmentRepo.syncLines(lines);
+
+      console.log(`[Shipment Sync] Done — batches:${bCount} shipments:${sCount} lines:${lCount}`);
+      return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount });
+    } catch (err: any) {
+      console.error('[Shipment Sync] Failed:', err.message);
+      return res.status(500).json({ error: err.message || 'Shipment sync failed.' });
     }
   });
 
   /**
-   * Sync and aggregate shipments from Google Sheet or load high fidelity demo data.
+   * Returns batch list from Supabase with computed summary fields.
    */
-  app.post('/api/shipment/sync', async (req, res) => {
+  app.get('/api/shipment/batches', async (_req, res) => {
     try {
-      const { demo } = req.body || {};
-      let rawData: any[] = [];
+      const batches   = await vendorShipmentRepo.getBatches();
+      const shipments = await Promise.all(
+        batches.map(b => vendorShipmentRepo.getShipmentsForBatch(b.batch_id))
+      );
 
-      if (!demo) {
-        const scriptUrl = process.env.APP_SCRIPTS_URL;
-        if (!scriptUrl || !scriptUrl.trim()) {
-          throw new Error('APP_SCRIPTS_URL is not set in environment variables.');
-        }
-        console.log(`[BFF Shipment Sync] Fetching from Apps Script: ${scriptUrl}`);
-        const response = await fetch(scriptUrl);
-        if (!response.ok) {
-          throw new Error(`Google Apps Script responded with status: ${response.status}`);
-        }
-        rawData = await response.json();
-        if (!Array.isArray(rawData)) {
-          throw new Error("Apps Script response is not a JSON array.");
-        }
-      } else {
-        // High fidelity demo fallback: Match existing system products, or generate defaults with non-zero fulfilled quantities
-        const allProducts = await repository.getAllProducts();
-        if (allProducts && allProducts.length > 0) {
-          rawData = allProducts.slice(0, 4).map((p, index) => {
-            const ordered = (index + 2) * 15; // 30, 45, 60, 75
-            const fulfilled = (index + 1) * 6; // 6, 12, 18, 24 (all less than ordered)
-            return {
-              sku: p.sku,
-              sku_name: p.product_name,
-              ordered_qty: ordered,
-              fulfilled_qty: fulfilled
-            };
-          });
-        } else {
-          // Absolute fallback if product database is completely empty
-          rawData = [
-            {
-              sku: "1020137",
-              sku_name: "QiYi MP 2x2 M Stickerless",
-              ordered_qty: 50,
-              fulfilled_qty: 15
-            },
-            {
-              sku: "1020080",
-              sku_name: "QiYi QiDi S 2x2 Stickerless",
-              ordered_qty: 25,
-              fulfilled_qty: 5
-            },
-            {
-              sku: "1030405",
-              sku_name: "MoYu MeiLong 3C 3x3 Stickerless",
-              ordered_qty: 100,
-              fulfilled_qty: 20
-            }
-          ];
-        }
+      const result = batches.map((b, i) => {
+        const batchShipments = shipments[i];
+        const batchId        = b.batch_id;
+        const batchType      = batchId.toUpperCase().startsWith('A') ? 'air' : 'sea';
+        const totalUnits     = batchShipments.reduce((sum, s) => sum + (s.total_units || 0), 0);
+        const totalCartons   = batchShipments.reduce((sum, s) => sum + (s.carton_count || 0), 0);
+
+        return {
+          batch_id:          batchId,
+          batch_type:        batchType,
+          status:            b.status || 'unknown',
+          total_shipments:   batchShipments.length,
+          total_cartons:     totalCartons,
+          total_units:       totalUnits,
+          expected_delivery: b.expected_delivery || null,
+          actual_delivery:   b.actual_delivery   || null,
+          carrier:           b.carrier || null,
+          is_delayed:        false,
+          delay_days:        0,
+          vendor_summary:    batchShipments.map(s => ({
+            vendor_code:  s.vendor_code,
+            shipment_id:  s.shipment_id,
+            carton_count: s.carton_count,
+            invoice_no:   s.invoice_no,
+            invoice_date: s.invoice_date,
+            total_units:  s.total_units,
+          })),
+        };
+      });
+
+      return res.json(result);
+    } catch (err: any) {
+      console.error('[BFF] GET /api/shipment/batches error:', err.message);
+      return res.status(500).json({ error: err.message || 'Failed to load batches.' });
+    }
+  });
+
+  /**
+   * Returns full batch detail (shipments + lines with scanned_quantity) from Supabase.
+   */
+  app.get('/api/shipment/batch-detail', async (req, res) => {
+    const batchId = ((req.query.batch_id as string) || '').trim();
+    if (!batchId) return res.status(400).json({ error: 'batch_id is required.' });
+    try {
+      const [shipments, lines] = await Promise.all([
+        vendorShipmentRepo.getShipmentsForBatch(batchId),
+        vendorShipmentRepo.getLinesForBatch(batchId),
+      ]);
+
+      const linesByShipment: Record<string, typeof lines> = {};
+      for (const l of lines) {
+        if (!linesByShipment[l.shipment_id]) linesByShipment[l.shipment_id] = [];
+        linesByShipment[l.shipment_id].push(l);
       }
 
-      // Group and aggregate by (sku, planned_mode)
-      const aggregated: { [key: string]: { sku: string; planned_mode: 'AIR' | 'SEA'; sku_name: string; ordered_qty: number; fulfilled_qty: number; product_id?: string } } = {};
+      const batchType = batchId.toUpperCase().startsWith('A') ? 'air' : 'sea';
 
-      for (const row of rawData) {
-        const sku = (row.sku || '').toString().trim();
-        if (!sku) continue;
+      const batch = {
+        batch_id:         batchId,
+        batch_type:       batchType,
+        status:           shipments.length ? 'open' : 'unknown',
+        vendor_shipments: shipments.map(s => ({
+          shipment_id:  s.shipment_id,
+          vendor_code:  s.vendor_code,
+          vendor_name:  s.vendor_code,
+          invoice_no:   s.invoice_no,
+          total_units:  s.total_units,
+          carton_count: s.carton_count,
+          line_items:   (linesByShipment[s.shipment_id] || []).map(l => ({
+            line_id:          l.line_id,
+            sku:              l.sku,
+            item_name:        l.item_name,
+            ean:              l.ean,
+            incoming_qty:     l.incoming_qty,
+            scanned_quantity: l.scanned_quantity,
+          })),
+        })),
+      };
 
-        const rawMode = (row.planned_mode || 'AIR').toString().trim().toUpperCase();
-        const planned_mode: 'AIR' | 'SEA' = rawMode === 'SEA' ? 'SEA' : 'AIR';
-        const key = `${sku}|${planned_mode}`;
-
-        const ordered = parseInt(row.ordered_qty, 10) || 0;
-        const fulfilled = parseInt(row.fulfilled_qty, 10) || 0;
-        const name = (row.sku_name || row.item_name || 'Unnamed Product').toString().trim();
-
-        if (aggregated[key]) {
-          aggregated[key].ordered_qty += ordered;
-          aggregated[key].fulfilled_qty += fulfilled;
-          if (!aggregated[key].sku_name || aggregated[key].sku_name === 'Unnamed Product') {
-            aggregated[key].sku_name = name;
-          }
-        } else {
-          aggregated[key] = { sku, planned_mode, sku_name: name, ordered_qty: ordered, fulfilled_qty: fulfilled };
-        }
-      }
-
-      // Try matching standard product_id from the database
-      const products = await repository.getAllProducts();
-      for (const key in aggregated) {
-        const { sku } = aggregated[key];
-        const matchingProduct = products.find(p => p.sku && p.sku.toLowerCase() === sku.toLowerCase());
-        if (matchingProduct) {
-          aggregated[key].product_id = matchingProduct.product_id;
-        }
-      }
-
-      const itemsToUpsert = Object.values(aggregated).map(item => ({
-        sku: item.sku,
-        planned_mode: item.planned_mode,
-        product_id: item.product_id,
-        sku_name: item.sku_name,
-        cu_ordered_qty: item.ordered_qty,
-        fulfilled_qty: 0  // fulfilled_qty is managed by Supabase only via Confirm Session
-      }));
-
-      const upserted = await shipmentRepository.upsertShipmentItems(itemsToUpsert);
-      return res.json({ success: true, count: upserted.length, data: upserted });
-    } catch (error: any) {
-      console.error('[BFF Shipment Sync] Sync error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to sync Google Sheet shipment data.' });
+      return res.json({ batch });
+    } catch (err: any) {
+      console.error('[BFF] GET /api/shipment/batch-detail error:', err.message);
+      return res.status(500).json({ error: err.message || 'Failed to load batch detail.' });
     }
   });
 
   /**
-   * Confirm current scan session. Increment database fulfilled quantities by scanned counted quantities.
+   * Records a single scan: increments scanned_quantity by 1 for the given line_id in Supabase.
    */
-  /**
-   * Real-time scan write: increments session_qty by 1 for the scanned SKU immediately on each scan.
-   */
-  app.post('/api/shipment/scan', async (req, res) => {
+  app.post('/api/shipment/scan-line', async (req, res) => {
+    const { line_id } = req.body;
+    if (!line_id) return res.status(400).json({ error: 'line_id is required.' });
     try {
-      const { sku, sku_name, product_id, planned_mode } = req.body;
-      if (!sku) return res.status(400).json({ error: 'sku is required.' });
-      const mode: 'AIR' | 'SEA' = (planned_mode || 'AIR').toString().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
-      await shipmentRepository.incrementSessionQty(sku, sku_name || sku, product_id || null, mode);
+      await vendorShipmentRepo.incrementScannedQty(line_id);
       return res.json({ success: true });
-    } catch (error: any) {
-      console.error('[BFF API] Real-time scan write error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to persist scan.' });
+    } catch (err: any) {
+      console.error('[BFF] POST /api/shipment/scan-line error:', err.message);
+      return res.status(500).json({ error: err.message || 'Failed to record scan.' });
     }
   });
 
   /**
-   * Confirm session: moves session_qty → fulfilled_qty and resets session_qty = 0.
+   * Manual trigger: push all scanned_quantity values from Supabase back to the Google Sheet.
+   * Also called automatically on the hourly interval started at server boot.
    */
-  app.post('/api/shipment/confirm', async (req, res) => {
+  app.post('/api/shipment/writeback', async (_req, res) => {
     try {
-      const { planned_mode } = req.body;
-      const mode: 'AIR' | 'SEA' = (planned_mode || 'AIR').toString().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
-      await shipmentRepository.commitSession(mode);
+      await runShipmentWriteback();
       return res.json({ success: true });
-    } catch (error: any) {
-      console.error('[BFF API] Session confirmation error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to confirm session.' });
-    }
-  });
-
-  /**
-   * Discard session: resets session_qty = 0 without touching fulfilled_qty.
-   */
-  app.post('/api/shipment/discard', async (req, res) => {
-    try {
-      const { planned_mode } = req.body;
-      const mode: 'AIR' | 'SEA' = (planned_mode || 'AIR').toString().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
-      await shipmentRepository.discardSession(mode);
-      return res.json({ success: true });
-    } catch (error: any) {
-      console.error('[BFF API] Discard session error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to discard session.' });
-    }
-  });
-
-  /**
-   * Reset the database shipment table completely
-   */
-  app.post('/api/shipment/reset', async (req, res) => {
-    try {
-      const { planned_mode } = req.body || {};
-      const mode: 'AIR' | 'SEA' = (planned_mode || 'AIR').toString().toUpperCase() === 'SEA' ? 'SEA' : 'AIR';
-      await shipmentRepository.resetShipments(mode);
-      return res.json({ success: true, message: `${mode} shipment barcodes wiped successfully.` });
-    } catch (error: any) {
-      console.error('[BFF API] Reset shipment error:', error);
-      return res.status(500).json({ error: 'Failed to reset shipments table.' });
+    } catch (err: any) {
+      console.error('[Shipment Writeback] Failed:', err.message);
+      return res.status(500).json({ error: err.message || 'Writeback failed.' });
     }
   });
 
@@ -570,39 +649,6 @@ async function startServer() {
       return res.json(refNums);
     } catch (err: any) {
       return res.status(500).json({ error: err.message || 'Failed to fetch PO ref nums.' });
-    }
-  });
-
-  app.get('/api/shipment/batches', async (_req, res) => {
-    const scriptUrl = process.env.APP_SCRIPTS_URL;
-    if (!scriptUrl) return res.status(503).json({ error: 'APP_SCRIPTS_URL not configured.' });
-    try {
-      const url = new URL(scriptUrl);
-      url.searchParams.set('action', 'getBatches');
-      const r = await fetch(url.toString());
-      if (!r.ok) throw new Error(`App Script responded ${r.status}`);
-      const data = await r.json();
-      return res.json(data);
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to fetch batches.' });
-    }
-  });
-
-  app.get('/api/shipment/batch-detail', async (req, res) => {
-    const batchId = (req.query.batch_id || '').toString().trim();
-    if (!batchId) return res.status(400).json({ error: 'batch_id is required.' });
-    const scriptUrl = process.env.APP_SCRIPTS_URL;
-    if (!scriptUrl) return res.status(503).json({ error: 'APP_SCRIPTS_URL not configured.' });
-    try {
-      const url = new URL(scriptUrl);
-      url.searchParams.set('action', 'getBatchDetails');
-      url.searchParams.set('batchId', batchId);
-      const r = await fetch(url.toString());
-      if (!r.ok) throw new Error(`App Script responded ${r.status}`);
-      const data = await r.json();
-      return res.json(data);
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to fetch batch detail.' });
     }
   });
 
