@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Product } from '../../../shared/types';
 import { BarcodePreview } from '../../single-barcode-generator/components/BarcodePreview';
-import { generateShipmentBatchNo } from '../../../shared/utilities/batchNo';
+// generateShipmentBatchNo removed — batch ID now comes from the active shipment's batch_id
 import { DuplicateEANModal } from '../../../shared/components/DuplicateEANModal';
 import {
   isEANUPCSelected,
@@ -114,6 +114,7 @@ export function ShipmentBarcodeForm() {
   // ── View / active shipment state ─────────────────────────────────────────
   const [view, setView] = useState<'browse' | 'scanning'>('browse');
   const [activeShipmentId, setActiveShipmentId] = useState<string | null>(null);
+  const [activeBatchId, setActiveBatchId] = useState<string>('');
   const [activeShipmentLines, setActiveShipmentLines] = useState<ShipmentLine[]>([]);
 
   // ── Session scanning state ───────────────────────────────────────────────
@@ -330,7 +331,7 @@ export function ShipmentBarcodeForm() {
     setScanStatus({ type: 'idle', message: `Shipment "${activeShipmentId}" loaded. Ready to scan.` });
   };
 
-  const startScanning = (shipment: VendorShipment) => {
+  const startScanning = (shipment: VendorShipment, batchId: string) => {
     const lines: ShipmentLine[] = (shipment.line_items || []).map(l => ({
       line_id:          l.line_id,
       sku:              l.sku,
@@ -344,6 +345,7 @@ export function ShipmentBarcodeForm() {
       if (l.already_received > 0) preloaded[l.sku] = l.already_received;
     }
     setActiveShipmentId(shipment.shipment_id);
+    setActiveBatchId(batchId);
     setActiveShipmentLines(lines);
     setCountingQty(preloaded);
     setExcessQtyFrequency({});
@@ -725,7 +727,7 @@ export function ShipmentBarcodeForm() {
                                   </button>
                                   {/* Start scanning at shipment level — no SKU expand needed */}
                                   <button
-                                    onClick={() => startScanning(shipment)}
+                                    onClick={() => startScanning(shipment, batch.batch_id)}
                                     className="shrink-0 flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold uppercase tracking-wider py-1.5 px-3 rounded-lg transition cursor-pointer select-none"
                                   >
                                     <Terminal className="h-3 w-3" />
@@ -764,7 +766,7 @@ export function ShipmentBarcodeForm() {
                                         </div>
                                         <div className="flex justify-end">
                                           <button
-                                            onClick={() => startScanning(shipment)}
+                                            onClick={() => startScanning(shipment, batch.batch_id)}
                                             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold uppercase tracking-wider py-2 px-5 rounded-xl transition cursor-pointer select-none"
                                           >
                                             <Terminal className="h-3.5 w-3.5" />
@@ -1154,7 +1156,7 @@ export function ShipmentBarcodeForm() {
         <div id="print-only-area" style={{ backgroundColor: '#ffffff' }}>
           {activePrintBatch.map((job, i) => (
             <div key={i} className="print-label-item">
-              <BarcodePreview product={job.product} scale={1.0} batchNo={generateShipmentBatchNo()} />
+              <BarcodePreview product={job.product} scale={1.0} batchNo={activeBatchId} />
             </div>
           ))}
         </div>,
