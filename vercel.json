@@ -1,6 +1,11 @@
 {
   "buildCommand": "vite build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/**/*.ts": {
+      "maxDuration": 30
+    }
+  },
   "rewrites": [
     { "source": "/api/barcode/:action", "destination": "/api/barcode?action=:action" },
     { "source": "/api/shipment/:action", "destination": "/api/shipment?action=:action" },
