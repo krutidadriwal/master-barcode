@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Printer, History, RefreshCw, CheckCircle2, AlertCircle, Database, Sparkles, BookOpen, FileDown, Mail, CloudDownload } from 'lucide-react';
 import { Product, BarcodeCache } from '../../../shared/types';
 import { SingleBarcodeValidator } from '../validators';
@@ -41,6 +41,8 @@ export function SingleBarcodeForm() {
   const isSelectedOrManualAction = useRef<boolean>(false);
 
   const pdfContainerRef = useRef<HTMLDivElement>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [isPdfExporting, setIsPdfExporting] = useState<boolean>(false);
 
   // Barcode product master sync state (Apps Script mode)
@@ -238,6 +240,41 @@ export function SingleBarcodeForm() {
     }
   };
 
+  // Suggestions: filter catalog client-side as user types
+  const suggestions = useMemo(() => {
+    const q = identifier.trim().toLowerCase();
+    if (q.length < 2 || !catalog.length) return [];
+    return catalog
+      .filter(p =>
+        p.sku?.toLowerCase().includes(q) ||
+        p.EANUPC?.toLowerCase().includes(q) ||
+        p.product_name?.toLowerCase().includes(q)
+      )
+      .sort((a, b) => {
+        // SKU prefix matches sort first
+        const aFirst = a.sku?.toLowerCase().startsWith(q) ? 0 : 1;
+        const bFirst = b.sku?.toLowerCase().startsWith(q) ? 0 : 1;
+        return aFirst - bFirst;
+      })
+      .slice(0, 8);
+  }, [identifier, catalog]);
+
+  // Close suggestions on click-outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const selectSuggestion = (p: Product) => {
+    setShowSuggestions(false);
+    selectCatalogProduct(p);
+  };
+
   // Quick select items from auxiliary list
   const selectCatalogProduct = (p: Product) => {
     isSelectedOrManualAction.current = true;
@@ -392,18 +429,19 @@ export function SingleBarcodeForm() {
             <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
               Identifier (EAN, UPC, or SKU)
             </label>
-            <div className="relative">
+            <div className="relative" ref={searchContainerRef}>
               <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
                 <Search className="h-4 w-4 text-slate-500" />
               </div>
               <input
                 type="text"
                 value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
+                onChange={(e) => { setIdentifier(e.target.value); setShowSuggestions(true); }}
+                onFocus={() => setShowSuggestions(true)}
                 placeholder="Paste SKU, EAN-13, or UPC code (e.g. 990011, 123456, 8901234567890)"
                 className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-500 tracking-wide font-medium transition"
               />
-              
+
               {/* Reset input button */}
               {identifier && (
                 <button
@@ -411,11 +449,42 @@ export function SingleBarcodeForm() {
                     setIdentifier('');
                     setProduct(null);
                     setError(null);
+                    setShowSuggestions(false);
                   }}
                   className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-500 hover:text-slate-350 text-xs font-semibold cursor-pointer"
                 >
                   Clear
                 </button>
+              )}
+
+              {/* Suggestions dropdown */}
+              {showSuggestions && suggestions.length > 0 && (
+                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+                  {suggestions.map((p) => {
+                    const q = identifier.trim().toLowerCase();
+                    const highlightSku = p.sku?.toLowerCase().includes(q);
+                    const highlightEan = p.EANUPC?.toLowerCase().includes(q);
+                    return (
+                      <div
+                        key={p.product_id}
+                        onMouseDown={(e) => { e.preventDefault(); selectSuggestion(p); }}
+                        className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-800 cursor-pointer border-b border-slate-800/60 last:border-0 transition"
+                      >
+                        <span className="text-xs font-semibold text-white truncate max-w-[55%]">{p.product_name}</span>
+                        <span className="flex items-center gap-2 shrink-0 text-[10px] font-mono">
+                          <span className={`px-1.5 py-0.5 rounded ${highlightSku ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'text-slate-400'}`}>
+                            {p.sku}
+                          </span>
+                          {p.EANUPC && (
+                            <span className={`px-1.5 py-0.5 rounded ${highlightEan ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'text-slate-500'}`}>
+                              {p.EANUPC}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>
