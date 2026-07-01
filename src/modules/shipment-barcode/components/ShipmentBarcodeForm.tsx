@@ -126,6 +126,10 @@ export function ShipmentBarcodeForm() {
   const [activePrintBatch, setActivePrintBatch] = useState<Array<{ product: Product }>>([]);
   const [locked, setLocked]                     = useState(false);
 
+  // ── Real-time sync state ─────────────────────────────────────────────────
+  const [pendingSyncs, setPendingSyncs] = useState(0);
+  const [syncErrorCount, setSyncErrorCount] = useState(0);
+
   // ── Duplicate EAN state ──────────────────────────────────────────────────
   const [duplicateModal, setDuplicateModal] = useState<{ ean: string; products: Product[] } | null>(null);
   const [sessionHasDuplicates, setSessionHasDuplicates] = useState<boolean>(() => hasSessionDuplicates());
@@ -327,6 +331,8 @@ export function ShipmentBarcodeForm() {
     setNoProductData([]);
     setScanTape([]);
     setActivePrintBatch([]);
+    setPendingSyncs(0);
+    setSyncErrorCount(0);
     setLocked(false);
     setScanStatus({ type: 'idle', message: `Shipment "${activeShipmentId}" loaded. Ready to scan.` });
   };
@@ -352,6 +358,8 @@ export function ShipmentBarcodeForm() {
     setNoProductData([]);
     setScanTape([]);
     setActivePrintBatch([]);
+    setPendingSyncs(0);
+    setSyncErrorCount(0);
     setLocked(false);
     history.pushState({ shipmentView: 'scanning' }, '');
     setView('scanning');
@@ -429,12 +437,16 @@ export function ShipmentBarcodeForm() {
       if (shipmentLine) {
         const nextCount = (countingQty[product.sku] || 0) + 1;
         setCountingQty(prev => ({ ...prev, [product.sku]: nextCount }));
-        // Persist to Supabase (fire-and-forget — UI already updated above)
+        // Persist to Supabase in real-time — track pending/failed syncs
+        setPendingSyncs(n => n + 1);
         fetch('/api/shipment/scan-line', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ line_id: shipmentLine.line_id }),
-        }).catch(e => console.warn('[Scan] Persist failed:', e));
+        }).then(r => {
+          if (!r.ok) setSyncErrorCount(n => n + 1);
+        }).catch(() => setSyncErrorCount(n => n + 1))
+          .finally(() => setPendingSyncs(n => Math.max(0, n - 1)));
         const isExcess = nextCount > shipmentLine.original_quantity;
         if (isExcess) {
           setExcessQtyFrequency(prev => ({ ...prev, [product.sku]: nextCount - shipmentLine.original_quantity }));
@@ -564,7 +576,27 @@ export function ShipmentBarcodeForm() {
             </button>
           )}
           {view === 'scanning' && !locked && (
-            <span className="text-[10px] text-slate-500">{linesCompleted}/{activeShipmentLines.length} lines done</span>
+            <div className="flex items-center gap-3">
+              {syncErrorCount > 0 && (
+                <span className="flex items-center gap-1 text-[10px] font-bold text-red-400 bg-red-500/10 border border-red-500/30 px-2 py-0.5 rounded">
+                  <XCircle className="h-3 w-3" />
+                  {syncErrorCount} sync error{syncErrorCount !== 1 ? 's' : ''}
+                </span>
+              )}
+              {pendingSyncs > 0 && (
+                <span className="flex items-center gap-1 text-[10px] text-indigo-300">
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                  Syncing…
+                </span>
+              )}
+              {pendingSyncs === 0 && syncErrorCount === 0 && scanTape.length > 0 && (
+                <span className="flex items-center gap-1 text-[10px] text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" />
+                  Synced
+                </span>
+              )}
+              <span className="text-[10px] text-slate-500">{linesCompleted}/{activeShipmentLines.length} lines done</span>
+            </div>
           )}
         </div>
       </div>

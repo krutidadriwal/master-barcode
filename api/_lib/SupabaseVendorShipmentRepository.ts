@@ -45,7 +45,10 @@ export class SupabaseVendorShipmentRepository {
     const dbUrl   = process.env.DATABASE_URL;
     const pgHost  = process.env.PGHOST;
     const sbUrl   = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const sbKey   = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    // Prefer service role key for server-side mutations (bypasses RLS)
+    const sbKey   = process.env.SUPABASE_SERVICE_KEY
+                  || process.env.SUPABASE_ANON_KEY
+                  || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
     if (dbUrl || pgHost) {
       try {
@@ -305,12 +308,19 @@ export class SupabaseVendorShipmentRepository {
     }
 
     if (this.supabaseClient) {
-      const { data: row } = await this.supabaseClient
-        .from('vendor_shipment_lines').select('scanned_quantity').eq('line_id', lineId).single();
-      await this.supabaseClient
-        .from('vendor_shipment_lines')
-        .update({ scanned_quantity: (row?.scanned_quantity || 0) + 1, updated_at: new Date().toISOString() })
-        .eq('line_id', lineId);
+      // Use rpc for an atomic increment; falls back to read-modify-write if rpc unavailable
+      const { error: rpcErr } = await this.supabaseClient.rpc('increment_scanned_qty', { p_line_id: lineId });
+      if (rpcErr) {
+        // rpc function not deployed — fall back to read-modify-write
+        const { data: row, error: selErr } = await this.supabaseClient
+          .from('vendor_shipment_lines').select('scanned_quantity').eq('line_id', lineId).single();
+        if (selErr) throw new Error(`scan-line select failed: ${selErr.message}`);
+        const { error: updErr } = await this.supabaseClient
+          .from('vendor_shipment_lines')
+          .update({ scanned_quantity: (row?.scanned_quantity || 0) + 1, updated_at: new Date().toISOString() })
+          .eq('line_id', lineId);
+        if (updErr) throw new Error(`scan-line update failed: ${updErr.message}`);
+      }
     }
   }
 
