@@ -80,7 +80,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
     return `Rs. ${clean}/-`;
   };
 
-  const validBarcode = (val?: string) => { const v = val?.trim() ?? ''; return v !== '' && v !== '0'; };
+  const validBarcode = (val?: string) => { const v = val?.trim() ?? ''; return v !== '' && v !== '0' && !/0{5,}$/.test(v); };
 
   // Barcode priority: EANUPC → sku numeric root (skips empty or literal "0")
   const skuRoot = (product.sku?.trim() || '990011').replace(/[^0-9]+$/i, '') || product.sku?.trim() || '990011';

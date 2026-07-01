@@ -744,46 +744,40 @@ export class SupabaseProductRepository {
     let errors   = 0;
 
     if (this.pgPool) {
-      const BATCH = 500;
+      // Column order must match the VALUES placeholders below
+      const COLS = [
+        'sku', 'product_id', 'item_name', 'product_type', 'brand', 'colour', 'brand_id',
+        'mrp', 'category_name', 'cost', 'mrp_in_ee', 'model_no', 'ean_upc', 'article_number',
+        'custom_ean', 'barcode', 'sku_for_barcode', 'mom', 'batch_no', 'inventory', 'updated_at', 'synced_at',
+      ] as const;
+      const UPDATE_SET = COLS
+        .filter(c => c !== 'sku')
+        .map(c => `${c}=EXCLUDED.${c}`)
+        .join(', ');
+
+      // 200 rows × 22 cols = 4 400 params per batch — well within PG's 65 535 limit
+      const BATCH = 200;
       for (let i = 0; i < normalized.length; i += BATCH) {
-        const chunk = normalized.slice(i, i + BATCH);
+        const chunk  = normalized.slice(i, i + BATCH);
+        const values: any[] = [];
+        const rowPlaceholders = chunk.map((row, rowIdx) => {
+          const base = rowIdx * COLS.length;
+          COLS.forEach(col => values.push((row as any)[col]));
+          return `(${COLS.map((_, ci) => `$${base + ci + 1}`).join(',')})`;
+        });
+
         const client = await this.pgPool.connect();
         try {
-          await client.query('BEGIN');
-          for (const row of chunk) {
-            await client.query(
-              `INSERT INTO ${BARCODE_TABLE}
-                 (sku, product_id, item_name, product_type, brand, colour, brand_id,
-                  mrp, category_name, cost, mrp_in_ee, model_no, ean_upc, article_number,
-                  custom_ean, barcode, sku_for_barcode, mom, batch_no, inventory, updated_at, synced_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
-               ON CONFLICT (sku) DO UPDATE SET
-                 product_id=EXCLUDED.product_id, item_name=EXCLUDED.item_name,
-                 product_type=EXCLUDED.product_type, brand=EXCLUDED.brand,
-                 colour=EXCLUDED.colour, brand_id=EXCLUDED.brand_id, mrp=EXCLUDED.mrp,
-                 category_name=EXCLUDED.category_name, cost=EXCLUDED.cost,
-                 mrp_in_ee=EXCLUDED.mrp_in_ee, model_no=EXCLUDED.model_no,
-                 ean_upc=EXCLUDED.ean_upc, article_number=EXCLUDED.article_number,
-                 custom_ean=EXCLUDED.custom_ean, barcode=EXCLUDED.barcode,
-                 sku_for_barcode=EXCLUDED.sku_for_barcode, mom=EXCLUDED.mom,
-                 batch_no=EXCLUDED.batch_no, inventory=EXCLUDED.inventory,
-                 updated_at=EXCLUDED.updated_at, synced_at=EXCLUDED.synced_at`,
-              [
-                row.sku, row.product_id, row.item_name, row.product_type, row.brand,
-                row.colour, row.brand_id, row.mrp, row.category_name, row.cost,
-                row.mrp_in_ee, row.model_no, row.ean_upc, row.article_number,
-                row.custom_ean, row.barcode, row.sku_for_barcode, row.mom,
-                row.batch_no, row.inventory, row.updated_at, row.synced_at,
-              ]
-            );
-            upserted++;
-          }
-          await client.query('COMMIT');
+          await client.query(
+            `INSERT INTO ${BARCODE_TABLE} (${COLS.join(',')})
+             VALUES ${rowPlaceholders.join(',')}
+             ON CONFLICT (sku) DO UPDATE SET ${UPDATE_SET}`,
+            values,
+          );
+          upserted += chunk.length;
         } catch (err) {
-          await client.query('ROLLBACK');
           console.error(`[syncBarcodeProductMaster] Batch ${i}–${i + chunk.length} failed:`, err);
           errors += chunk.length;
-          upserted -= chunk.length;
         } finally {
           client.release();
         }
