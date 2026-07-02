@@ -30,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
       const data = await r.json() as any;
-      if (!data.success) throw new Error(data.error || 'Apps Script returned failure');
+      if (!data.success) throw new Error(data.error || data.message || 'Apps Script returned failure');
 
       const rawBatches:   any[] = data.batches   || [];
       const rawShipments: any[] = data.shipments  || [];
@@ -64,9 +64,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .map((l: any) => {
           const shipmentId  = String(l['shipment_id'] || '').trim();
           const sku         = String(l['sku']         || '').trim();
-          const sheetLineId = String(l['line_id']     || '').trim();
           return {
-            line_id:          sheetLineId || `${shipmentId}::${sku}`,
+            line_id:          `${shipmentId}::${sku}`,
             shipment_id:      shipmentId,
             batch_id:         String(l['batch_id']    || '').trim(),
             vendor_code:      String(l['vendor_code'] || '').trim() || null,

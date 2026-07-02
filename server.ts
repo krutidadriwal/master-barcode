@@ -24,7 +24,7 @@ async function startServer() {
     console.warn('[BFF Server] pdf-to-printer not available — /api/print/silent will return 503.');
   }
   const app = express();
-  const PORT = 3000;
+  const PORT = 5000;
 
   // Body parser — 10mb limit for base64 PDF payloads from the silent print endpoint
   app.use(express.json({ limit: '10mb' }));
@@ -336,8 +336,11 @@ async function startServer() {
         body: JSON.stringify({ action: 'sync_shipment_data' }),
       });
       if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
-      const data = await r.json();
-      if (!data.success) throw new Error(data.error || 'Apps Script returned failure');
+      const raw = await r.text();
+      console.log('[Shipment Sync] Raw Apps Script response:', raw.slice(0, 500));
+      let data: any;
+      try { data = JSON.parse(raw); } catch { throw new Error(`Apps Script response is not valid JSON: ${raw.slice(0, 200)}`); }
+      if (!data.success) throw new Error(data.error || data.message || `Apps Script returned: ${JSON.stringify(data).slice(0, 200)}`);
 
       const rawBatches:   any[] = data.batches   || [];
       const rawShipments: any[] = data.shipments  || [];
@@ -374,9 +377,8 @@ async function startServer() {
         .map((l: any) => {
           const shipmentId = String(l['shipment_id'] || '').trim();
           const sku        = String(l['sku']         || '').trim();
-          const sheetLineId = String(l['line_id']   || '').trim();
           return {
-            line_id:          sheetLineId || `${shipmentId}::${sku}`,
+            line_id:          `${shipmentId}::${sku}`,
             shipment_id:      shipmentId,
             batch_id:         String(l['batch_id']    || '').trim(),
             vendor_code:      String(l['vendor_code'] || '').trim() || null,

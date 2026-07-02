@@ -137,7 +137,10 @@ export function ProductionOrderBarcodeForm() {
       try {
         const rows = await searchByCode(q);
         setResults(rows);
-        if (rows.length === 1) setSelectedRow(rows[0]);
+        if (rows.length === 1) {
+          setSelectedRow(rows[0]);
+          setQuantityStr(String(rows[0].order_quantity || 1));
+        }
       } catch (err: any) {
         setSearchError(err.message || 'Search failed.');
         setResults([]);
@@ -167,6 +170,7 @@ export function ProductionOrderBarcodeForm() {
 
   const selectRow = (row: ProductionOrderRow) => {
     setSelectedRow(row);
+    setQuantityStr(String(row.order_quantity || 1));
     setCodeMatch(null);
     setVerifyError(null);
     setUserSku('');
