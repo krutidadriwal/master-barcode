@@ -9,6 +9,10 @@ const LABEL_H_MM = 30;
  * and writes them as individual pages (50×30mm) into a downloaded PDF.
  */
 export async function downloadLabelsPdf(container: HTMLElement, filename: string): Promise<void> {
+  // Wait for fonts and one animation frame so JsBarcode useEffects have run in all label instances
+  await document.fonts.ready;
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
   const items = Array.from(container.querySelectorAll<HTMLElement>('.print-label-item'));
   if (!items.length) return;
 
@@ -50,6 +54,9 @@ export async function downloadLabelsPdf(container: HTMLElement, filename: string
  * instead of triggering a browser download. Used for server-side silent printing.
  */
 export async function generateLabelsPdfBlob(container: HTMLElement): Promise<Blob> {
+  await document.fonts.ready;
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
   const items = Array.from(container.querySelectorAll<HTMLElement>('.print-label-item'));
   if (!items.length) throw new Error('No label items found in container.');
 

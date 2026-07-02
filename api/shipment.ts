@@ -73,8 +73,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             sku,
             item_name:        String(l['item_name']   || sku).trim(),
             ean:              String(l['ean']         || '').trim() || null,
-            incoming_qty:     parseInt(l['invoice_qty'] || 0, 10) || 0,
-            scanned_quantity: 0,
+            incoming_qty:     parseInt(l['invoice_qty'] ?? l['qty'] ?? l['invoice_quantity'] ?? 0, 10) || 0,
+            scanned_quantity: 0, // never read from sheet — preserved in DB by syncLines
           };
         });
 

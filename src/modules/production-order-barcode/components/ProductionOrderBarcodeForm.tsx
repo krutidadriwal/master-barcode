@@ -18,8 +18,6 @@ import {
 } from '../../../shared/services/EANDuplicateService';
 import { useSettings } from '../../../shared/contexts/SettingsContext';
 
-const PDF_ENABLE = import.meta.env.VITE_PDF_ENABLE === 'true';
-
 // ---------- API helpers ----------
 
 async function searchByCode(code: string): Promise<ProductionOrderRow[]> {
@@ -224,27 +222,11 @@ export function ProductionOrderBarcodeForm() {
           });
           setSessionHasDuplicates(true);
           setDuplicateModal({ ean: ean!.trim(), products: dupeProducts });
-          return; // Block print
+          return;
         }
       } catch (err) {
         console.error('[EAN Duplicate Check] Failed:', err);
-        // Block on error — safer than allowing print when check status is unknown
         return;
-      }
-    }
-
-    if (PDF_ENABLE && pdfContainerRef.current) {
-      setIsPdfExporting(true);
-      try {
-        const date = new Date().toISOString().slice(0, 10);
-        await downloadLabelsPdf(
-          pdfContainerRef.current,
-          `PO_${selectedRow!.sku}_${date}.pdf`
-        );
-      } catch (err) {
-        console.error('[PDF Export] Failed:', err);
-      } finally {
-        setIsPdfExporting(false);
       }
     }
 
@@ -570,30 +552,24 @@ export function ProductionOrderBarcodeForm() {
 
               <button
                 onClick={handlePrint}
-                disabled={!canPrint || isPdfExporting}
+                disabled={!canPrint}
                 className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-xl transition text-sm cursor-pointer"
+              >
+                <Printer className="h-4 w-4" /> Print {quantity > 0 ? quantity : ''} Label{quantity !== 1 ? 's' : ''}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadPdfOnly}
+                disabled={!canPrint || isPdfExporting}
+                className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 hover:text-white font-semibold py-3 px-4 rounded-xl transition text-sm cursor-pointer"
               >
                 {isPdfExporting ? (
                   <><RefreshCw className="h-4 w-4 animate-spin" /> Generating PDF...</>
                 ) : (
-                  <><Printer className="h-4 w-4" /> Print {quantity > 0 ? quantity : ''} Label{quantity !== 1 ? 's' : ''}</>
+                  <><FileDown className="h-4 w-4" /> Download PDF</>
                 )}
               </button>
-
-              {PDF_ENABLE && (
-                <button
-                  type="button"
-                  onClick={handleDownloadPdfOnly}
-                  disabled={!canPrint || isPdfExporting}
-                  className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 hover:text-white font-semibold py-3 px-4 rounded-xl transition text-sm cursor-pointer"
-                >
-                  {isPdfExporting ? (
-                    <><RefreshCw className="h-4 w-4 animate-spin" /> Generating PDF...</>
-                  ) : (
-                    <><FileDown className="h-4 w-4" /> Download PDF</>
-                  )}
-                </button>
-              )}
             </div>
           </div>
 
@@ -636,7 +612,7 @@ export function ProductionOrderBarcodeForm() {
       )}
 
       {/* Off-screen PDF capture container */}
-      {PDF_ENABLE && printProduct && quantity > 0 && (
+      {printProduct && quantity > 0 && (
         <div
           ref={pdfContainerRef}
           style={{ position: 'fixed', left: '-9999px', top: 0, background: '#fff', pointerEvents: 'none' }}

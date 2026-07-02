@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import JsBarcode from 'jsbarcode';
 import { Product } from '../../../shared/types';
 import { BarcodeGeneratorService, BarcodeType } from '../../../shared/services/BarcodeGeneratorService';
@@ -60,7 +60,36 @@ interface BarcodePreviewProps {
   useStrippedSku?: boolean; // Show numeric-root SKU in Item No (production order use)
 }
 
+// Module-level singleton — font loading fires once, all instances share the result
+let _fontsReadyPromise: Promise<void> | null = null;
+function getFontsReady(): Promise<void> {
+  if (!_fontsReadyPromise) {
+    _fontsReadyPromise = Promise.all([
+      document.fonts.load('bold 12px "OCRB"'),
+      document.fonts.load('normal 12px "Rubik-Light"'),
+      document.fonts.ready,
+    ]).then(() => {}).catch(() => {}); // never reject — show label regardless on error
+  }
+  return _fontsReadyPromise;
+}
+
+function useFontsReady(): boolean {
+  const [ready, setReady] = useState(() => {
+    // If fonts are already loaded (e.g. off-screen container mounting after first preview),
+    // skip the skeleton entirely by checking synchronously.
+    try {
+      return document.fonts.check('bold 12px "OCRB"') && document.fonts.check('normal 12px "Rubik-Light"');
+    } catch { return false; }
+  });
+  useEffect(() => {
+    if (ready) return;
+    getFontsReady().then(() => setReady(true));
+  }, []);
+  return ready;
+}
+
 export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku = false }: BarcodePreviewProps) {
+  const fontsReady = useFontsReady();
   // Safe formatting Helper
   const formatMrp = (rawMrp: string) => {
     const clean = rawMrp.trim();
@@ -91,8 +120,31 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
   // Detect format dynamically using shared services
   const autoFormat = BarcodeGeneratorService.detectFormat(barcodeValue);
 
+  if (!fontsReady) {
+    return (
+      <div
+        style={{
+          width: '50mm', height: '30mm',
+          transform: `scale(${scale})`,
+          transformOrigin: 'top left',
+          marginBottom: scale !== 1.0 ? `${-30 * (1 - scale)}mm` : '0',
+          marginRight:  scale !== 1.0 ? `${-50 * (1 - scale)}mm` : '0',
+          background: '#ffffff',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <div style={{
+          width: '80%', height: '60%', borderRadius: '2px',
+          background: 'linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%)',
+          backgroundSize: '200% 100%',
+          animation: 'shimmer 1.2s infinite',
+        }} />
+      </div>
+    );
+  }
+
   return (
-    <div 
+    <div
       className="relative flex flex-col justify-start select-none overflow-hidden origin-top-left bg-white text-black"
       style={{
         width: '50mm',

@@ -3,6 +3,7 @@
   src: url('/ocrb.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
+  font-display: block;
 }
 
 @font-face {
@@ -10,6 +11,7 @@
   src: url('/ocrb.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
+  font-display: block;
 }
 
 @font-face {
@@ -17,6 +19,7 @@
   src: url('/ocrb.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
+  font-display: block;
 }
 
 @font-face {
@@ -24,6 +27,7 @@
   src: url('/Rubik-Light.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
+  font-display: block;
 }
 
 @import "tailwindcss";
@@ -91,6 +95,11 @@
   #print-only-area {
     display: none !important;
   }
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 /* Custom utility for line length truncating */
