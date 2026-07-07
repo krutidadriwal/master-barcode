@@ -227,6 +227,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ success: true });
     }
 
+    // POST /api/shipment/confirm-weights — cumulative listed/measured weight totals
+    // (AIR shipments). Supabase-only columns; never sent to Apps Script.
+    if (action === 'confirm-weights') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+      const { shipment_id, listed_weight, actual_weight } = req.body || {};
+      if (!shipment_id) return res.status(400).json({ error: 'shipment_id is required.' });
+      const listedWeight = parseFloat(listed_weight);
+      const actualWeight = parseFloat(actual_weight);
+      if (!Number.isFinite(listedWeight) || !Number.isFinite(actualWeight)) {
+        return res.status(400).json({ error: 'listed_weight and actual_weight must be numbers.' });
+      }
+      await vendorShipmentRepo.updateShipmentWeights(shipment_id, listedWeight, actualWeight);
+      return res.json({ success: true });
+    }
+
     // POST /api/shipment/writeback — push scanned_quantity values back to the Google Sheet
     if (action === 'writeback') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });

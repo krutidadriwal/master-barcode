@@ -20,6 +20,12 @@ export interface VendorShipment {
   carton_count: number;
   total_units: number;
   synced_at?: string;
+  // Supabase-only fields — set from the app's weight-confirmation step, never
+  // sent to or read from Apps Script. Deliberately excluded from syncShipments()
+  // so a re-sync from the sheet can never touch or clear them.
+  listed_weight?: number | null;
+  actual_weight?: number | null;
+  drive_link?: string | null;
 }
 
 export interface VendorShipmentLine {
@@ -120,8 +126,15 @@ export class SupabaseVendorShipmentRepository {
           invoice_date TEXT,
           carton_count INTEGER NOT NULL DEFAULT 0,
           total_units  INTEGER NOT NULL DEFAULT 0,
-          synced_at    TIMESTAMPTZ DEFAULT NOW()
+          synced_at    TIMESTAMPTZ DEFAULT NOW(),
+          listed_weight REAL,
+          actual_weight REAL,
+          drive_link    TEXT
         );
+
+        ALTER TABLE vendor_shipments ADD COLUMN IF NOT EXISTS listed_weight REAL;
+        ALTER TABLE vendor_shipments ADD COLUMN IF NOT EXISTS actual_weight REAL;
+        ALTER TABLE vendor_shipments ADD COLUMN IF NOT EXISTS drive_link    TEXT;
 
         CREATE TABLE IF NOT EXISTS vendor_shipment_lines (
           line_id          TEXT PRIMARY KEY,
@@ -363,6 +376,48 @@ export class SupabaseVendorShipmentRepository {
     }
 
     return null;
+  }
+
+  // ── Weight confirmation (Supabase-only; never touched by syncShipments/Apps Script) ──
+
+  async updateShipmentWeights(shipmentId: string, listedWeight: number, actualWeight: number): Promise<void> {
+    await this.ensureTables();
+
+    if (this.pgPool) {
+      await this.pgPool.query(
+        `UPDATE vendor_shipments SET listed_weight = $1, actual_weight = $2 WHERE shipment_id = $3`,
+        [listedWeight, actualWeight, shipmentId]
+      );
+      return;
+    }
+
+    if (this.supabaseClient) {
+      const { error } = await this.supabaseClient
+        .from('vendor_shipments')
+        .update({ listed_weight: listedWeight, actual_weight: actualWeight })
+        .eq('shipment_id', shipmentId);
+      if (error) throw error;
+    }
+  }
+
+  async updateShipmentDriveLink(shipmentId: string, driveLink: string): Promise<void> {
+    await this.ensureTables();
+
+    if (this.pgPool) {
+      await this.pgPool.query(
+        `UPDATE vendor_shipments SET drive_link = $1 WHERE shipment_id = $2`,
+        [driveLink, shipmentId]
+      );
+      return;
+    }
+
+    if (this.supabaseClient) {
+      const { error } = await this.supabaseClient
+        .from('vendor_shipments')
+        .update({ drive_link: driveLink })
+        .eq('shipment_id', shipmentId);
+      if (error) throw error;
+    }
   }
 
   async getShipmentsForBatch(batchId: string): Promise<VendorShipment[]> {

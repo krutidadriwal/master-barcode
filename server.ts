@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -13,6 +14,7 @@ import { ProductionOrderGSheetSyncService } from './api/_lib/ProductionOrderGShe
 import { EasyEcomProductMasterSyncService } from './api/_lib/EasyEcomProductMasterSyncService';
 import { SupabasePurchaseOrderRepository } from './api/_lib/SupabasePurchaseOrderRepository';
 import { SupabaseReceivingSheetRepository } from './api/_lib/SupabaseReceivingSheetRepository';
+import { GoogleDriveService, getGoogleDriveAuthUrl, exchangeGoogleDriveAuthCode } from './api/_lib/GoogleDriveService';
 
 async function startServer() {
   // Lazy-load pdf-to-printer inside the async function to avoid top-level-await issues with tsx
@@ -36,12 +38,50 @@ async function startServer() {
   const vendorShipmentRepo = new SupabaseVendorShipmentRepository();
   const poRepository = new SupabasePurchaseOrderRepository();
   const receivingSheetRepo = new SupabaseReceivingSheetRepository();
+  const googleDriveService = new GoogleDriveService();
+  // Vercel serverless functions hard-cap the total request body at ~4.5MB (a
+  // platform limit, not something multer/Express enforce) — kept in sync with
+  // api/shipment-upload-weight-photos.ts even though this local Express server
+  // isn't subject to it, so behavior matches between dev and prod. The frontend
+  // also downscales/re-encodes photos client-side before upload for the same reason.
+  const weightPhotoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1.4 * 1024 * 1024, files: 3 } });
   const productionOrderRepository = new ProductionOrderRepository();
   const productionOrderSyncService = new ProductionOrderGSheetSyncService();
 
   // BFF API Routes
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  /**
+   * One-time Google Drive OAuth setup for the weight-confirmation photo uploads.
+   * Visit /api/drive/oauth/start, complete the Google consent screen, then copy
+   * the refresh token it displays into GOOGLE_DRIVE_REFRESH_TOKEN.
+   */
+  app.get('/api/drive/oauth/start', (_req, res) => {
+    try {
+      res.redirect(getGoogleDriveAuthUrl());
+    } catch (err: any) {
+      res.status(500).send(err.message);
+    }
+  });
+
+  app.get('/api/drive/oauth/callback', async (req, res) => {
+    const code = (req.query.code as string) || '';
+    if (!code) return res.status(400).send('Missing ?code from Google.');
+    try {
+      const tokens = await exchangeGoogleDriveAuthCode(code);
+      console.log('[Google Drive OAuth] Refresh token:', tokens.refresh_token);
+      res.send(`
+        <html><body style="font-family: sans-serif; padding: 2rem; max-width: 640px; margin: 0 auto;">
+          <h2>Google Drive connected</h2>
+          <p>Copy this into your <code>.env</code> as <code>GOOGLE_DRIVE_REFRESH_TOKEN</code>, then restart the server:</p>
+          <pre style="background:#eee;padding:1rem;border-radius:8px;word-break:break-all;user-select:all;">${tokens.refresh_token || '(No refresh token returned — you likely already granted consent before. Revoke access at https://myaccount.google.com/permissions for this app, then try again.)'}</pre>
+        </body></html>
+      `);
+    } catch (err: any) {
+      res.status(500).send(`OAuth exchange failed: ${err.message}`);
+    }
   });
 
   /**
@@ -531,6 +571,54 @@ async function startServer() {
     } catch (err: any) {
       console.error('[BFF] POST /api/shipment/scan-line error:', err.message);
       return res.status(500).json({ error: err.message || 'Failed to record scan.' });
+    }
+  });
+
+  /**
+   * Weight confirmation (AIR shipments) — cumulative listed/measured weight totals.
+   * Supabase-only columns (listed_weight/actual_weight on vendor_shipments); never
+   * sent to or read from Apps Script, so a later sheet re-sync can't touch/clear them.
+   */
+  app.post('/api/shipment/confirm-weights', async (req, res) => {
+    const { shipment_id, listed_weight, actual_weight } = req.body || {};
+    if (!shipment_id) return res.status(400).json({ error: 'shipment_id is required.' });
+    const listedWeight = parseFloat(listed_weight);
+    const actualWeight = parseFloat(actual_weight);
+    if (!Number.isFinite(listedWeight) || !Number.isFinite(actualWeight)) {
+      return res.status(400).json({ error: 'listed_weight and actual_weight must be numbers.' });
+    }
+    try {
+      await vendorShipmentRepo.updateShipmentWeights(shipment_id, listedWeight, actualWeight);
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[BFF] POST /api/shipment/confirm-weights error:', err.message);
+      return res.status(500).json({ error: err.message || 'Failed to save weights.' });
+    }
+  });
+
+  /**
+   * Weight-confirmation photos (AIR shipments, max 3) — uploads to Google Drive
+   * under <root>/<batch_id>/<shipment_id>/ and stores the resulting folder link
+   * in vendor_shipments.drive_link (Supabase-only, never synced to Apps Script).
+   */
+  app.post('/api/shipment/upload-weight-photos', weightPhotoUpload.array('photos', 3), async (req, res) => {
+    const shipmentId = (req.body?.shipment_id || '').trim();
+    const batchId = (req.body?.batch_id || '').trim();
+    if (!shipmentId) return res.status(400).json({ error: 'shipment_id is required.' });
+    if (!batchId) return res.status(400).json({ error: 'batch_id is required.' });
+    const files = (req.files as Express.Multer.File[]) || [];
+    if (!files.length) return res.status(400).json({ error: 'At least one photo is required.' });
+    try {
+      const driveLink = await googleDriveService.uploadShipmentPhotos(
+        batchId,
+        shipmentId,
+        files.map(f => ({ originalname: f.originalname, mimetype: f.mimetype, buffer: f.buffer }))
+      );
+      await vendorShipmentRepo.updateShipmentDriveLink(shipmentId, driveLink);
+      return res.json({ success: true, drive_link: driveLink });
+    } catch (err: any) {
+      console.error('[BFF] POST /api/shipment/upload-weight-photos error:', err.message);
+      return res.status(500).json({ error: err.message || 'Failed to upload photos to Drive.' });
     }
   });
 

@@ -4,9 +4,15 @@
   "functions": {
     "api/**/*.ts": {
       "maxDuration": 10
+    },
+    "api/shipment-upload-weight-photos.ts": {
+      "maxDuration": 30
     }
   },
   "rewrites": [
+    { "source": "/api/shipment/upload-weight-photos", "destination": "/api/shipment-upload-weight-photos" },
+    { "source": "/api/drive/oauth/start", "destination": "/api/drive-oauth-start" },
+    { "source": "/api/drive/oauth/callback", "destination": "/api/drive-oauth-callback" },
     { "source": "/api/barcode/:action", "destination": "/api/barcode?action=:action" },
     { "source": "/api/shipment/:action", "destination": "/api/shipment?action=:action" },
     { "source": "/api/production-order/:action", "destination": "/api/production-order?action=:action" },

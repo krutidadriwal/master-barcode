@@ -12,6 +12,7 @@ import { BarcodePreview } from '../../single-barcode-generator/components/Barcod
 // generateShipmentBatchNo removed — batch ID now comes from the active shipment's batch_id
 import { DuplicateEANModal } from '../../../shared/components/DuplicateEANModal';
 import { DownloadReceivingSheet } from './DownloadReceivingSheet';
+import { WeightConfirmationPanel } from './WeightConfirmationPanel';
 import {
   isEANUPCSelected,
   checkEANDuplicate,
@@ -128,6 +129,8 @@ export function ShipmentBarcodeForm() {
   const searchQuery = searchParams.get('q') || '';
   const typeFilterRaw = searchParams.get('type');
   const typeFilter: 'all' | 'air' | 'sea' = typeFilterRaw === 'air' || typeFilterRaw === 'sea' ? typeFilterRaw : 'all';
+  // Same convention used server-side (see server.ts) to classify a batch from its ID.
+  const activeBatchType: 'air' | 'sea' = activeBatchId.toUpperCase().startsWith('A') ? 'air' : 'sea';
 
   // ── Batch browse state ───────────────────────────────────────────────────
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -140,6 +143,11 @@ export function ShipmentBarcodeForm() {
 
   // ── Active shipment lines (re-populated locally on scan-start or restore) ─
   const [activeShipmentLines, setActiveShipmentLines] = useState<ShipmentLine[]>([]);
+  const [activeCartonCount, setActiveCartonCount] = useState<number>(1);
+  // Air shipments must have every carton's listed + measured weight filled in
+  // (via WeightConfirmationPanel) before scanning is allowed. Irrelevant for sea.
+  const [weightsConfirmed, setWeightsConfirmed] = useState(false);
+  const scanningLocked = activeBatchType === 'air' && !weightsConfirmed;
 
   // ── Session scanning state ───────────────────────────────────────────────
   const [countingQty, setCountingQty]           = useState<Record<string, number>>({});
@@ -205,6 +213,7 @@ export function ShipmentBarcodeForm() {
         for (const l of lines) if (l.already_received > 0) preloaded[l.sku] = l.already_received;
         setActiveShipmentLines(lines);
         setCountingQty(preloaded);
+        setActiveCartonCount(shipment.carton_count || 1);
         setScanStatus({
           type: 'idle',
           message: `Shipment "${activeShipmentId}" restored — ${lines.length} SKU${lines.length !== 1 ? 's' : ''}. Ready to scan.`,
@@ -224,14 +233,14 @@ export function ShipmentBarcodeForm() {
   // ── Auto-focus loop (only in scanning view) ───────────────────────────────
 
   useEffect(() => {
-    if (locked || view !== 'scanning' || scanMode !== 'autofocus' || !activeShipmentId) return;
+    if (locked || scanningLocked || view !== 'scanning' || scanMode !== 'autofocus' || !activeShipmentId) return;
     const interval = setInterval(() => {
       if (document.activeElement !== inputRef.current && inputRef.current) {
         inputRef.current.focus();
       }
     }, 1500);
     return () => clearInterval(interval);
-  }, [locked, view, scanMode, activeShipmentId]);
+  }, [locked, scanningLocked, view, scanMode, activeShipmentId]);
 
   // ── Auto-trigger scan in autofocus mode ───────────────────────────────────
 
@@ -251,7 +260,7 @@ export function ShipmentBarcodeForm() {
   // ── Global keydown for manual mode ───────────────────────────────────────
 
   useEffect(() => {
-    if (locked || view !== 'scanning' || scanMode !== 'manual' || !activeShipmentId) return;
+    if (locked || scanningLocked || view !== 'scanning' || scanMode !== 'manual' || !activeShipmentId) return;
     let buffer = '';
     const handler = (e: KeyboardEvent) => {
       const el = document.activeElement;
@@ -284,7 +293,7 @@ export function ShipmentBarcodeForm() {
     window.addEventListener('keydown', handler);
     window.addEventListener('paste', pasteHandler);
     return () => { window.removeEventListener('keydown', handler); window.removeEventListener('paste', pasteHandler); };
-  }, [locked, view, scanMode, activeShipmentId, activeShipmentLines, excessQtyFrequency]);
+  }, [locked, scanningLocked, view, scanMode, activeShipmentId, activeShipmentLines, excessQtyFrequency]);
 
   // ── Auto-print when activePrintBatch is populated ─────────────────────────
 
@@ -409,6 +418,8 @@ export function ShipmentBarcodeForm() {
     }
     setActiveShipmentLines(lines);
     setCountingQty(preloaded);
+    setActiveCartonCount(shipment.carton_count || 1);
+    setWeightsConfirmed(false);
     setExcessQtyFrequency({});
     setNoProductData([]);
     setScanTape([]);
@@ -432,6 +443,10 @@ export function ShipmentBarcodeForm() {
 
   const executeBarcodeScan = async (cleanValue: string) => {
     if (!cleanValue || !activeShipmentId) return;
+    if (scanningLocked) {
+      setScanStatus({ type: 'error', message: 'Confirm carton weights above before scanning this air shipment.' });
+      return;
+    }
     setScanStatus({ type: 'processing', message: `Querying: "${cleanValue}"` });
 
     try {
@@ -905,8 +920,23 @@ export function ShipmentBarcodeForm() {
       {!showReceivingSheet && view === 'scanning' && !locked && (
         <div className="flex flex-col gap-2.5">
 
-          {/* Scan Input */}
-          <div className="bg-indigo-600 rounded-2xl p-4 shadow-xl space-y-2.5">
+          {/* Weight Confirmation — AIR shipments only. Keyed by shipment so it
+              resets to a fresh set of rows/photos whenever the active shipment changes. */}
+          {activeBatchType === 'air' && activeShipmentId && (
+            <WeightConfirmationPanel
+              key={activeShipmentId}
+              shipmentId={activeShipmentId}
+              batchId={activeBatchId}
+              cartonCount={activeCartonCount}
+              onCompletionChange={setWeightsConfirmed}
+            />
+          )}
+
+          {/* Scan Input — greyed out and disabled until weights are confirmed (air shipments only) */}
+          <div className={`relative bg-indigo-600 rounded-2xl p-4 shadow-xl space-y-2.5 transition ${scanningLocked ? 'opacity-50 grayscale' : ''}`}>
+            {scanningLocked && (
+              <div className="absolute inset-0 z-10 cursor-not-allowed" title="Confirm carton weights above to unlock scanning" />
+            )}
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-bold text-white uppercase tracking-widest flex items-center gap-2 select-none">
                 <Terminal className="h-3.5 w-3.5" />
@@ -914,8 +944,8 @@ export function ShipmentBarcodeForm() {
               </h2>
               <div className="inline-flex rounded-lg bg-indigo-700 p-0.5">
                 {(['autofocus', 'manual'] as const).map(m => (
-                  <button key={m} type="button" onClick={() => setScanMode(m)}
-                    className={`px-3 py-1 text-[10px] font-bold rounded-md transition cursor-pointer ${
+                  <button key={m} type="button" onClick={() => setScanMode(m)} disabled={scanningLocked}
+                    className={`px-3 py-1 text-[10px] font-bold rounded-md transition cursor-pointer disabled:cursor-not-allowed ${
                       scanMode === m ? 'bg-white text-indigo-700 shadow' : 'text-indigo-200 hover:text-white'
                     }`}
                   >
@@ -931,15 +961,18 @@ export function ShipmentBarcodeForm() {
                 type="text"
                 value={barcodeInput}
                 onChange={e => setBarcodeInput(e.target.value)}
+                disabled={scanningLocked}
                 placeholder={
-                  scanMode === 'autofocus'
+                  scanningLocked
+                    ? '🔒 CONFIRM CARTON WEIGHTS ABOVE TO UNLOCK SCANNING'
+                    : scanMode === 'autofocus'
                     ? '🎯 AUTO-FOCUS ACTIVE — SCAN BARCODES DIRECTLY...'
                     : '✏️ TYPE SKU OR SCAN ANYWHERE — PRESS ENTER TO SUBMIT...'
                 }
-                className="w-full bg-indigo-900 border-2 border-indigo-400/40 focus:border-white rounded-xl px-4 py-3.5 text-sm font-mono tracking-widest text-white placeholder:text-indigo-300/60 focus:outline-none focus:ring-2 focus:ring-white/20 transition text-center uppercase caret-white"
+                className="w-full bg-indigo-900 border-2 border-indigo-400/40 focus:border-white rounded-xl px-4 py-3.5 text-sm font-mono tracking-widest text-white placeholder:text-indigo-300/60 focus:outline-none focus:ring-2 focus:ring-white/20 transition text-center uppercase caret-white disabled:cursor-not-allowed"
               />
               {scanMode === 'manual' && (
-                <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 py-1.5 px-3 bg-white hover:bg-indigo-50 text-indigo-700 rounded-lg text-[10px] font-bold tracking-wide cursor-pointer">
+                <button type="submit" disabled={scanningLocked} className="absolute right-3 top-1/2 -translate-y-1/2 py-1.5 px-3 bg-white hover:bg-indigo-50 text-indigo-700 rounded-lg text-[10px] font-bold tracking-wide cursor-pointer disabled:cursor-not-allowed">
                   Scan
                 </button>
               )}
