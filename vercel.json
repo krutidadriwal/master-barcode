@@ -10,6 +10,7 @@
     { "source": "/api/barcode/:action", "destination": "/api/barcode?action=:action" },
     { "source": "/api/shipment/:action", "destination": "/api/shipment?action=:action" },
     { "source": "/api/production-order/:action", "destination": "/api/production-order?action=:action" },
+    { "source": "/api/receiving-sheet/:action", "destination": "/api/receiving-sheet?action=:action" },
     { "source": "/api/:path*", "destination": "/api/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
