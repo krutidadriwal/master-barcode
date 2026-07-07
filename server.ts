@@ -12,6 +12,7 @@ import { ProductionOrderRepository } from './api/_lib/ProductionOrderRepository'
 import { ProductionOrderGSheetSyncService } from './api/_lib/ProductionOrderGSheetSyncService';
 import { EasyEcomProductMasterSyncService } from './api/_lib/EasyEcomProductMasterSyncService';
 import { SupabasePurchaseOrderRepository } from './api/_lib/SupabasePurchaseOrderRepository';
+import { SupabaseReceivingSheetRepository } from './api/_lib/SupabaseReceivingSheetRepository';
 
 async function startServer() {
   // Lazy-load pdf-to-printer inside the async function to avoid top-level-await issues with tsx
@@ -34,6 +35,7 @@ async function startServer() {
   void new SupabaseShipmentRepository(); // kept for legacy table compatibility
   const vendorShipmentRepo = new SupabaseVendorShipmentRepository();
   const poRepository = new SupabasePurchaseOrderRepository();
+  const receivingSheetRepo = new SupabaseReceivingSheetRepository();
   const productionOrderRepository = new ProductionOrderRepository();
   const productionOrderSyncService = new ProductionOrderGSheetSyncService();
 
@@ -401,7 +403,20 @@ async function startServer() {
       const lCount = await vendorShipmentRepo.syncLines(lines);
 
       console.log(`[Shipment Sync] Done — batches:${bCount} shipments:${sCount} lines:${lCount}`);
-      return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount });
+
+      // Also sync the Download Receiving Sheet table (separate 'Inventory' spreadsheet).
+      // Best-effort: a failure here (e.g. flag off, script URL unset) must not fail the
+      // shipment sync that the Refresh button is primarily used for.
+      let receivingSheetResult: { lines: number } | { error: string };
+      try {
+        receivingSheetResult = await syncReceivingSheet();
+        console.log(`[Receiving Sheet Sync] Done — lines:${receivingSheetResult.lines}`);
+      } catch (err: any) {
+        console.warn('[Receiving Sheet Sync] Skipped/failed:', err.message);
+        receivingSheetResult = { error: err.message };
+      }
+
+      return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount, receiving_sheet: receivingSheetResult });
     } catch (err: any) {
       console.error('[Shipment Sync] Failed:', err.message);
       return res.status(500).json({ error: err.message || 'Shipment sync failed.' });
@@ -651,6 +666,128 @@ async function startServer() {
       return res.json(refNums);
     } catch (err: any) {
       return res.status(500).json({ error: err.message || 'Failed to fetch PO ref nums.' });
+    }
+  });
+
+  /**
+   * Download Receiving Sheet — sourced from the 'Inventory' Google Sheet's
+   * "Purchase Orders" tab (a separate spreadsheet from the shipment/vendor sync).
+   * Only wired up when APP_SCRIPT_FOR_BARCODE=true; the central DB flow for this
+   * has not been built yet, so we return a clear error when the flag is off.
+   */
+  async function syncReceivingSheet(): Promise<{ lines: number }> {
+    if (process.env.APP_SCRIPT_FOR_BARCODE !== 'true') {
+      throw new Error('Central DB flow for the receiving sheet is not built yet. Set APP_SCRIPT_FOR_BARCODE=true to sync from the Inventory sheet.');
+    }
+    const scriptUrl = process.env.INVENTORY_SCRIPTS_URL;
+    if (!scriptUrl?.trim()) throw new Error('INVENTORY_SCRIPTS_URL is not configured.');
+
+    const r = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'sync_receiving_sheet_data' }),
+    });
+    if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
+    const raw = await r.text();
+    let data: any;
+    try { data = JSON.parse(raw); } catch { throw new Error(`Apps Script response is not valid JSON: ${raw.slice(0, 200)}`); }
+    if (!data.success) throw new Error(data.error || data.message || `Apps Script returned: ${JSON.stringify(data).slice(0, 200)}`);
+
+    const rawLines: any[] = data.lines || [];
+    const lines = rawLines
+      .filter((l: any) => l['po_id'] && l['item_sku'])
+      .map((l: any) => {
+        const poId    = String(l['po_id']    || '').trim();
+        const itemSku = String(l['item_sku'] || '').trim();
+        return {
+          line_id:     `${poId}::${itemSku}`,
+          po_id:       poId,
+          po_ref_no:   String(l['po_ref_no']  || '').trim() || null,
+          item_sku:    itemSku,
+          ean_fnsku:   String(l['ean_fnsku']  || '').trim() || null,
+          item_name:   String(l['item_name']  || itemSku).trim(),
+          qty:         parseInt(l['qty'] ?? 0, 10) || 0,
+          pending_qty: parseInt(l['pending_qty'] ?? 0, 10) || 0,
+          shipment_id: String(l['shipment_id'] || '').trim() || null,
+        };
+      });
+
+    const count = await receivingSheetRepo.syncLines(lines);
+    return { lines: count };
+  }
+
+  app.post('/api/receiving-sheet/sync', async (_req, res) => {
+    try {
+      console.log('[Receiving Sheet Sync] Calling Apps Script sync_receiving_sheet_data…');
+      const result = await syncReceivingSheet();
+      console.log(`[Receiving Sheet Sync] Done — lines:${result.lines}`);
+      return res.json({ success: true, lines: result.lines });
+    } catch (err: any) {
+      console.error('[Receiving Sheet Sync] Failed:', err.message);
+      return res.status(501).json({ error: err.message || 'Receiving sheet sync failed.' });
+    }
+  });
+
+  app.get('/api/receiving-sheet/lines', async (req, res) => {
+    if (process.env.APP_SCRIPT_FOR_BARCODE !== 'true') {
+      return res.status(501).json({ error: 'Central DB flow for the receiving sheet is not built yet. Set APP_SCRIPT_FOR_BARCODE=true to use the Inventory sheet flow.' });
+    }
+    try {
+      const poId = ((req.query.po_id as string) || '').trim();
+      const lines = poId
+        ? await receivingSheetRepo.getLinesForPO(poId)
+        : await receivingSheetRepo.getLines();
+      return res.json({ success: true, lines });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch receiving sheet lines.' });
+    }
+  });
+
+  /**
+   * Resolve any one of po_id / shipment_id / po_ref_no into the matching lines,
+   * the other two identifiers, and the vendor shipment batch_id (looked up via
+   * inventory_po_lines.po_ref_no = vendor_shipments.shipment_id).
+   */
+  app.get('/api/receiving-sheet/search', async (req, res) => {
+    if (process.env.APP_SCRIPT_FOR_BARCODE !== 'true') {
+      return res.status(501).json({ error: 'Central DB flow for the receiving sheet is not built yet. Set APP_SCRIPT_FOR_BARCODE=true to use the Inventory sheet flow.' });
+    }
+    try {
+      const poId       = ((req.query.po_id as string)       || '').trim();
+      const shipmentId = ((req.query.shipment_id as string) || '').trim();
+      const poRefNo    = ((req.query.po_ref_no as string)   || '').trim();
+
+      if (!poId && !shipmentId && !poRefNo) {
+        return res.status(400).json({ error: 'One of po_id, shipment_id, or po_ref_no is required.' });
+      }
+
+      const lines = poId
+        ? await receivingSheetRepo.getLinesByPoId(poId)
+        : shipmentId
+        ? await receivingSheetRepo.getLinesByShipmentId(shipmentId)
+        : await receivingSheetRepo.getLinesByPoRefNo(poRefNo);
+
+      if (!lines.length) {
+        return res.json({ success: true, po_id: poId || null, po_ref_no: poRefNo || null, shipment_id: shipmentId || null, batch_id: null, lines: [] });
+      }
+
+      const resolvedPoRefNo = lines[0].po_ref_no;
+      let batchId: string | null = null;
+      if (resolvedPoRefNo) {
+        const shipment = await vendorShipmentRepo.getShipmentByShipmentId(resolvedPoRefNo);
+        batchId = shipment?.batch_id || null;
+      }
+
+      return res.json({
+        success:     true,
+        po_id:       lines[0].po_id,
+        po_ref_no:   resolvedPoRefNo,
+        shipment_id: lines[0].shipment_id,
+        batch_id:    batchId,
+        lines,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to search receiving sheet lines.' });
     }
   });
 

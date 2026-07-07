@@ -1,15 +1,17 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
   RefreshCw, Terminal, AlertTriangle, CheckCircle2, XCircle,
   ShieldAlert, Inbox, FileSpreadsheet, Lock, Unlock,
   ClipboardCheck, Sparkles, Search, ChevronDown, ChevronRight,
-  Plane, Ship, ArrowLeft,
+  Plane, Ship, ArrowLeft, FileDown,
 } from 'lucide-react';
 import { Product } from '../../../shared/types';
 import { BarcodePreview } from '../../single-barcode-generator/components/BarcodePreview';
 // generateShipmentBatchNo removed — batch ID now comes from the active shipment's batch_id
 import { DuplicateEANModal } from '../../../shared/components/DuplicateEANModal';
+import { DownloadReceivingSheet } from './DownloadReceivingSheet';
 import {
   isEANUPCSelected,
   checkEANDuplicate,
@@ -100,21 +102,43 @@ type ScanStatusState = {
 
 export function ShipmentBarcodeForm() {
 
+  // ── URL-backed navigational state ────────────────────────────────────────
+  // view, active shipment/batch, session-lock, browse search/filter, and the
+  // receiving-sheet overlay all live in the URL (via useSearchParams) instead
+  // of plain useState — this preserves them across refresh/back-forward/share,
+  // and replaces the old manual history.pushState/popstate hack below.
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const updateParams = (patch: Record<string, string | null>, opts?: { replace?: boolean }) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === null || v === '') next.delete(k);
+        else next.set(k, v);
+      }
+      return next;
+    }, opts);
+  };
+
+  const view: 'browse' | 'scanning' = searchParams.get('view') === 'scanning' ? 'scanning' : 'browse';
+  const showReceivingSheet = searchParams.get('receiving') === '1';
+  const activeShipmentId = searchParams.get('shipment_id');
+  const activeBatchId = searchParams.get('batch_id') || '';
+  const locked = searchParams.get('locked') === '1';
+  const searchQuery = searchParams.get('q') || '';
+  const typeFilterRaw = searchParams.get('type');
+  const typeFilter: 'all' | 'air' | 'sea' = typeFilterRaw === 'air' || typeFilterRaw === 'sea' ? typeFilterRaw : 'all';
+
   // ── Batch browse state ───────────────────────────────────────────────────
   const [batches, setBatches] = useState<Batch[]>([]);
   const [batchesLoading, setBatchesLoading] = useState(false);
   const [batchesError, setBatchesError] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'air' | 'sea'>('all');
   const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
   const [batchDetails, setBatchDetails] = useState<Record<string, BatchDetail>>({});
   const [batchDetailLoading, setBatchDetailLoading] = useState<string | null>(null);
   const [expandedShipmentId, setExpandedShipmentId] = useState<string | null>(null);
 
-  // ── View / active shipment state ─────────────────────────────────────────
-  const [view, setView] = useState<'browse' | 'scanning'>('browse');
-  const [activeShipmentId, setActiveShipmentId] = useState<string | null>(null);
-  const [activeBatchId, setActiveBatchId] = useState<string>('');
+  // ── Active shipment lines (re-populated locally on scan-start or restore) ─
   const [activeShipmentLines, setActiveShipmentLines] = useState<ShipmentLine[]>([]);
 
   // ── Session scanning state ───────────────────────────────────────────────
@@ -124,7 +148,6 @@ export function ShipmentBarcodeForm() {
   const [noProductData, setNoProductData]       = useState<NoProductEntry[]>([]);
   const [scanTape, setScanTape]                 = useState<ScanTapeEntry[]>([]);
   const [activePrintBatch, setActivePrintBatch] = useState<Array<{ product: Product }>>([]);
-  const [locked, setLocked]                     = useState(false);
 
   // ── Real-time sync state ─────────────────────────────────────────────────
   const [pendingSyncs, setPendingSyncs] = useState(0);
@@ -152,18 +175,45 @@ export function ShipmentBarcodeForm() {
 
   useEffect(() => { loadBatches(); }, []);
 
-  // ── Browser back button support ───────────────────────────────────────────
-  // When we enter scanning view we push a history entry so the browser back
-  // button navigates back to the browse view instead of leaving the page.
-
+  // ── Restore scanning state from the URL ──────────────────────────────────
+  // Covers refresh, browser back/forward, and shared/bookmarked links that
+  // land directly on ?view=scanning — re-fetches the shipment's lines since
+  // activeShipmentLines is local-only and doesn't survive a remount.
   useEffect(() => {
-    const handler = () => {
-      setView('browse');
-      setLocked(false);
-    };
-    window.addEventListener('popstate', handler);
-    return () => window.removeEventListener('popstate', handler);
-  }, []);
+    if (view !== 'scanning' || !activeShipmentId || !activeBatchId) return;
+    if (activeShipmentLines.length > 0) return; // already loaded in this session (e.g. via startScanning)
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/shipment/batch-detail?batch_id=${encodeURIComponent(activeBatchId)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const detail: BatchDetail = data.batch || data;
+        const shipment = detail.vendor_shipments?.find(s => s.shipment_id === activeShipmentId);
+        if (!shipment) {
+          setScanStatus({ type: 'error', message: `Could not restore shipment "${activeShipmentId}" — it may no longer exist.` });
+          return;
+        }
+        const lines: ShipmentLine[] = (shipment.line_items || []).map(l => ({
+          line_id:          l.line_id,
+          sku:              l.sku,
+          item_name:        l.item_name,
+          original_quantity: l.incoming_qty,
+          already_received: l.scanned_quantity || 0,
+        }));
+        const preloaded: Record<string, number> = {};
+        for (const l of lines) if (l.already_received > 0) preloaded[l.sku] = l.already_received;
+        setActiveShipmentLines(lines);
+        setCountingQty(preloaded);
+        setScanStatus({
+          type: 'idle',
+          message: `Shipment "${activeShipmentId}" restored — ${lines.length} SKU${lines.length !== 1 ? 's' : ''}. Ready to scan.`,
+        });
+      } catch (err: any) {
+        setScanStatus({ type: 'error', message: `Failed to restore shipment: ${err.message || 'Unknown error'}` });
+      }
+    })();
+  }, [view, activeShipmentId, activeBatchId]);
 
   // ── scanMode persistence ──────────────────────────────────────────────────
 
@@ -275,9 +325,16 @@ export function ShipmentBarcodeForm() {
     try {
       if (syncFirst) {
         const syncRes = await fetch('/api/shipment/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const syncData = await syncRes.json().catch(() => ({} as any));
         if (!syncRes.ok) {
-          const e = await syncRes.json().catch(() => ({}));
-          console.warn('[Shipment] Sync warning:', e.error || syncRes.status);
+          console.warn('[Shipment] Sync warning:', syncData.error || syncRes.status);
+        }
+        // receiving_sheet sync is best-effort and never fails this request (status stays 200
+        // even if it errored) — surface it separately so failures aren't silently swallowed.
+        if (syncData.receiving_sheet?.error) {
+          console.warn('[Receiving Sheet] Sync failed:', syncData.receiving_sheet.error);
+        } else if (syncData.receiving_sheet?.lines != null) {
+          console.log(`[Receiving Sheet] Synced ${syncData.receiving_sheet.lines} line(s).`);
         }
       }
       const res = await fetch('/api/shipment/batches');
@@ -333,7 +390,7 @@ export function ShipmentBarcodeForm() {
     setActivePrintBatch([]);
     setPendingSyncs(0);
     setSyncErrorCount(0);
-    setLocked(false);
+    updateParams({ locked: null });
     setScanStatus({ type: 'idle', message: `Shipment "${activeShipmentId}" loaded. Ready to scan.` });
   };
 
@@ -350,8 +407,6 @@ export function ShipmentBarcodeForm() {
     for (const l of lines) {
       if (l.already_received > 0) preloaded[l.sku] = l.already_received;
     }
-    setActiveShipmentId(shipment.shipment_id);
-    setActiveBatchId(batchId);
     setActiveShipmentLines(lines);
     setCountingQty(preloaded);
     setExcessQtyFrequency({});
@@ -360,9 +415,9 @@ export function ShipmentBarcodeForm() {
     setActivePrintBatch([]);
     setPendingSyncs(0);
     setSyncErrorCount(0);
-    setLocked(false);
-    history.pushState({ shipmentView: 'scanning' }, '');
-    setView('scanning');
+    // Pushes a new history entry (default setSearchParams behavior), so the
+    // browser back button naturally returns to the browse view/filters.
+    updateParams({ view: 'scanning', shipment_id: shipment.shipment_id, batch_id: batchId, locked: null });
     setScanStatus({
       type: 'idle',
       message: `Shipment "${shipment.shipment_id}" loaded — ${lines.length} SKU${lines.length !== 1 ? 's' : ''}. Ready to scan.`,
@@ -370,12 +425,7 @@ export function ShipmentBarcodeForm() {
   };
 
   const backToBrowse = () => {
-    if (history.state?.shipmentView === 'scanning') {
-      history.back(); // fires popstate → handler sets view + locked
-    } else {
-      setView('browse');
-      setLocked(false);
-    }
+    updateParams({ view: null, shipment_id: null, batch_id: null, locked: null });
   };
 
   // ── Core scan engine ──────────────────────────────────────────────────────
@@ -565,7 +615,14 @@ export function ShipmentBarcodeForm() {
           <h1 className="text-sm font-bold tracking-tight text-white whitespace-nowrap">Shipment Barcode Receiving</h1>
         </div>
         <div className="flex items-center gap-2.5 shrink-0">
-          {view === 'browse' && (
+          <button
+            onClick={() => updateParams({ receiving: '1' })}
+            className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 hover:text-white text-[11px] font-semibold py-1.5 px-3 rounded-lg transition cursor-pointer select-none whitespace-nowrap"
+          >
+            <FileDown className="h-3 w-3" />
+            Download Receiving Sheet
+          </button>
+          {view === 'browse' && !showReceivingSheet && (
             <button
               onClick={() => loadBatches(true)}
               disabled={batchesLoading}
@@ -601,8 +658,13 @@ export function ShipmentBarcodeForm() {
         </div>
       </div>
 
+      {/* ── Download Receiving Sheet (placeholder page) ── */}
+      {showReceivingSheet && (
+        <DownloadReceivingSheet onBack={() => updateParams({ receiving: null })} />
+      )}
+
       {/* ── Browse View ── */}
-      {view === 'browse' && (
+      {!showReceivingSheet && view === 'browse' && (
         <>
           {/* Search + type filter */}
           <div className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5">
@@ -613,7 +675,7 @@ export function ShipmentBarcodeForm() {
               <input
                 type="text"
                 value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
+                onChange={e => updateParams({ q: e.target.value }, { replace: true })}
                 placeholder="Search by batch ID or shipment ID…"
                 className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 font-mono transition"
               />
@@ -622,7 +684,7 @@ export function ShipmentBarcodeForm() {
               {(['all', 'air', 'sea'] as const).map(f => (
                 <button
                   key={f}
-                  onClick={() => setTypeFilter(f)}
+                  onClick={() => updateParams({ type: f === 'all' ? null : f }, { replace: true })}
                   className={`px-3 py-1 text-[10px] font-bold rounded-md transition cursor-pointer flex items-center gap-1 ${
                     typeFilter === f ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'
                   }`}
@@ -840,7 +902,7 @@ export function ShipmentBarcodeForm() {
       )}
 
       {/* ── Scanning View ── */}
-      {view === 'scanning' && !locked && (
+      {!showReceivingSheet && view === 'scanning' && !locked && (
         <div className="flex flex-col gap-2.5">
 
           {/* Scan Input */}
@@ -1024,7 +1086,7 @@ export function ShipmentBarcodeForm() {
                   if (sessionHasDuplicates) {
                     await sendSessionDuplicateEmail('Shipment Barcode');
                   }
-                  setLocked(true);
+                  updateParams({ locked: '1' });
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }
               }}
@@ -1038,7 +1100,7 @@ export function ShipmentBarcodeForm() {
       )}
 
       {/* ── Locked / Summary Screen ── */}
-      {view === 'scanning' && locked && (
+      {!showReceivingSheet && view === 'scanning' && locked && (
         <div className="space-y-6">
 
           {/* Locked Header */}

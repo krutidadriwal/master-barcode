@@ -3,11 +3,62 @@ import { SupabaseProductRepository } from './_lib/SupabaseProductRepository.js';
 import { SupabaseShipmentRepository } from './_lib/SupabaseShipmentRepository.js';
 import { SupabasePurchaseOrderRepository } from './_lib/SupabasePurchaseOrderRepository.js';
 import { SupabaseVendorShipmentRepository } from './_lib/SupabaseVendorShipmentRepository.js';
+import { SupabaseReceivingSheetRepository } from './_lib/SupabaseReceivingSheetRepository.js';
 
 const repository = new SupabaseProductRepository();
 const shipmentRepository = new SupabaseShipmentRepository();
 const poRepository = new SupabasePurchaseOrderRepository();
 const vendorShipmentRepo = new SupabaseVendorShipmentRepository();
+const receivingSheetRepo = new SupabaseReceivingSheetRepository();
+
+/**
+ * Best-effort sync of the Download Receiving Sheet table (a separate
+ * 'Inventory' spreadsheet) — called from the same Refresh action as the
+ * shipment sync. Never throws; failures are reported inline in the response.
+ */
+async function syncReceivingSheetBestEffort(): Promise<{ lines: number } | { error: string }> {
+  try {
+    if (process.env.APP_SCRIPT_FOR_BARCODE !== 'true') {
+      throw new Error('Central DB flow for the receiving sheet is not built yet. Set APP_SCRIPT_FOR_BARCODE=true to sync from the Inventory sheet.');
+    }
+    const scriptUrl = process.env.INVENTORY_SCRIPTS_URL;
+    if (!scriptUrl?.trim()) throw new Error('INVENTORY_SCRIPTS_URL is not configured.');
+
+    const r = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'sync_receiving_sheet_data' }),
+    });
+    if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
+    const data = await r.json() as any;
+    if (!data.success) throw new Error(data.error || data.message || 'Apps Script returned failure');
+
+    const rawLines: any[] = data.lines || [];
+    const lines = rawLines
+      .filter((l: any) => l['po_id'] && l['item_sku'])
+      .map((l: any) => {
+        const poId    = String(l['po_id']    || '').trim();
+        const itemSku = String(l['item_sku'] || '').trim();
+        return {
+          line_id:     `${poId}::${itemSku}`,
+          po_id:       poId,
+          po_ref_no:   String(l['po_ref_no']  || '').trim() || null,
+          item_sku:    itemSku,
+          ean_fnsku:   String(l['ean_fnsku']  || '').trim() || null,
+          item_name:   String(l['item_name']  || itemSku).trim(),
+          qty:         parseInt(l['qty'] ?? 0, 10) || 0,
+          pending_qty: parseInt(l['pending_qty'] ?? 0, 10) || 0,
+          shipment_id: String(l['shipment_id'] || '').trim() || null,
+        };
+      });
+
+    const count = await receivingSheetRepo.syncLines(lines);
+    return { lines: count };
+  } catch (err: any) {
+    console.warn('[Receiving Sheet Sync] Skipped/failed:', err.message);
+    return { error: err.message };
+  }
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const action = req.query.action as string;
@@ -85,7 +136,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const sCount = await vendorShipmentRepo.syncShipments(shipments);
       const lCount = await vendorShipmentRepo.syncLines(lines);
 
-      return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount });
+      // Also sync the Download Receiving Sheet table — best-effort, does not fail this request.
+      const receivingSheetResult = await syncReceivingSheetBestEffort();
+
+      return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount, receiving_sheet: receivingSheetResult });
     }
 
     // GET /api/shipment/batches — list all batches with summary fields

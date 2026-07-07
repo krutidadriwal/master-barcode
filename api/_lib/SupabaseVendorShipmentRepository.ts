@@ -344,6 +344,27 @@ export class SupabaseVendorShipmentRepository {
     return [];
   }
 
+  async getShipmentByShipmentId(shipmentId: string): Promise<VendorShipment | null> {
+    await this.ensureTables();
+
+    if (this.pgPool) {
+      const res = await this.pgPool.query<VendorShipment>(
+        `SELECT * FROM vendor_shipments WHERE shipment_id = $1 LIMIT 1`,
+        [shipmentId]
+      );
+      return res.rows[0] || null;
+    }
+
+    if (this.supabaseClient) {
+      const { data, error } = await this.supabaseClient
+        .from('vendor_shipments').select('*').eq('shipment_id', shipmentId).limit(1).maybeSingle();
+      if (error) throw error;
+      return data || null;
+    }
+
+    return null;
+  }
+
   async getShipmentsForBatch(batchId: string): Promise<VendorShipment[]> {
     await this.ensureTables();
 

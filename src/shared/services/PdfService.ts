@@ -178,11 +178,16 @@ function cloneAndInlineStyles(sourceEl: any, forceMonochrome: boolean): any {
 
 export class PdfService {
   /**
-   * Captures HTML elements and packages them into a multi-page PDF.
+   * Captures HTML elements and packages them into a multi-page jsPDF instance.
    * Cleanses the cloned DOM from oklch / oklab styling and disables site stylesheets temporarily during html2canvas,
    * guaranteeing that color parsing errors never break the compilation workflow.
+   *
+   * NOTE: disabling stylesheets affects the whole document (not just the isolated
+   * clone), which causes a brief unstyled flash across the live page while this
+   * runs. Callers that show this to the user should cover the screen with a
+   * loading overlay for the duration of the call.
    */
-  static async exportToPdf(containerId: string, options: PdfExportOptions): Promise<void> {
+  private static async buildPdf(containerId: string, options: PdfExportOptions): Promise<InstanceType<typeof jsPDF>> {
     const container = document.getElementById(containerId);
     if (!container) {
       throw new Error(`Target container ID "${containerId}" was not found.`);
@@ -190,7 +195,7 @@ export class PdfService {
 
     const pages = container.querySelectorAll('.print-page-target');
     const targetPages = pages.length > 0 ? Array.from(pages) : [container];
-    const { widthMm, heightMm, dpi = 300, filename } = options;
+    const { widthMm, heightMm, dpi = 300 } = options;
 
     // 1. Perform clones first while stylesheets are still fully active to capture computed styles exactly as previewed
     const clones: HTMLElement[] = [];
@@ -285,6 +290,54 @@ export class PdfService {
       }
     }
 
-    pdf.save(filename.endsWith('.pdf') ? filename : `${filename}.pdf`);
+    return pdf;
+  }
+
+  /**
+   * Captures HTML elements and downloads them as a multi-page PDF.
+   */
+  static async exportToPdf(containerId: string, options: PdfExportOptions): Promise<void> {
+    const pdf = await this.buildPdf(containerId, options);
+    pdf.save(options.filename.endsWith('.pdf') ? options.filename : `${options.filename}.pdf`);
+  }
+
+  /**
+   * Captures HTML elements into a PDF and opens the browser's native print
+   * dialog for it directly — via a hidden iframe loading the generated PDF
+   * blob, so it never depends on the host page's own print CSS/@page rules
+   * (which may be tuned for an unrelated layout, e.g. thermal labels).
+   */
+  static async printPdf(containerId: string, options: PdfExportOptions): Promise<void> {
+    const pdf = await this.buildPdf(containerId, options);
+    const blobUrl = pdf.output('bloburl') as unknown as string;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = 'none';
+    iframe.src = blobUrl;
+
+    document.body.appendChild(iframe);
+    await new Promise<void>((resolve) => {
+      iframe.onload = () => {
+        try {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } catch (err) {
+          console.warn('[PdfService] Failed to trigger print on PDF iframe:', err);
+        }
+        resolve();
+      };
+    });
+
+    // Leave the iframe mounted long enough for the print dialog to read the blob,
+    // then clean up both it and the object URL.
+    setTimeout(() => {
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      URL.revokeObjectURL(blobUrl);
+    }, 60_000);
   }
 }
