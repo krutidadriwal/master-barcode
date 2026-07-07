@@ -122,7 +122,8 @@ const cellStyle: React.CSSProperties = {
   border: '1px solid #000000',
   padding: '2mm',
   textAlign: 'left',
-  fontSize: '9px',
+  fontSize: '16px',
+  wordBreak: 'break-word',
 };
 
 const headerCellStyle: React.CSSProperties = {
@@ -458,14 +459,14 @@ export function DownloadReceivingSheet({ onBack }: DownloadReceivingSheetProps) 
                     borderBottom: '2px solid #000000', paddingBottom: '4mm', marginBottom: '4mm',
                   }}>
                     <div style={{ textAlign: 'center', flexShrink: 0 }}>
-                      <div style={{ fontSize: '8px', fontWeight: 700, marginBottom: '1mm' }}>PO REF NO.</div>
+                      <div style={{ fontSize: '11px', fontWeight: 700, marginBottom: '1mm' }}>PO REF NO.</div>
                       {result.po_ref_no && <ReceivingSheetBarcode value={result.po_ref_no} />}
-                      <div style={{ fontSize: '9px', fontWeight: 700, marginTop: '1mm' }}>{result.po_ref_no}</div>
+                      <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '1mm' }}>{result.po_ref_no}</div>
                     </div>
 
                     <div style={{ textAlign: 'center', flex: '1 1 auto', minWidth: 0, paddingTop: '2mm' }}>
-                      <div style={{ fontSize: '16px', fontWeight: 800 }}>Purchase Order Inbound Sheet</div>
-                      <div style={{ fontSize: '9px', marginTop: '2mm' }}>
+                      <div style={{ fontSize: '20px', fontWeight: 800 }}>Purchase Order Inbound Sheet</div>
+                      <div style={{ fontSize: '12px', marginTop: '2mm' }}>
                         PO ID: {result.po_id}&nbsp;&nbsp;|&nbsp;&nbsp;Shipment ID: {result.shipment_id || '—'}
                       </div>
                     </div>
@@ -473,22 +474,32 @@ export function DownloadReceivingSheet({ onBack }: DownloadReceivingSheetProps) 
                     <div style={{ textAlign: 'center', flexShrink: 0 }}>
                       {result.batch_id && (
                         <>
-                          <div style={{ fontSize: '8px', fontWeight: 700, marginBottom: '1mm' }}>BATCH</div>
+                          <div style={{ fontSize: '11px', fontWeight: 700, marginBottom: '1mm' }}>BATCH</div>
                           <ReceivingSheetBarcode value={result.batch_id} />
-                          <div style={{ fontSize: '9px', fontWeight: 700, marginTop: '1mm' }}>{result.batch_id}</div>
+                          <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '1mm' }}>{result.batch_id}</div>
                         </>
                       )}
                     </div>
                   </div>
 
                   {linePages.length > 1 && (
-                    <div style={{ textAlign: 'right', fontSize: '8px', marginBottom: '2mm' }}>
+                    <div style={{ textAlign: 'right', fontSize: '10px', marginBottom: '2mm' }}>
                       Page {pageIndex + 1} of {linePages.length}
                     </div>
                   )}
 
                   {/* Line items table */}
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                    <colgroup>
+                      <col style={{ width: '9%' }} />  {/* PO ID */}
+                      <col style={{ width: '10%' }} /> {/* PO Ref No. */}
+                      <col style={{ width: '9%' }} />  {/* Item SKU */}
+                      <col style={{ width: '12%' }} /> {/* EAN / FNSKU */}
+                      <col style={{ width: '20%' }} /> {/* Item Name — narrower; wraps instead of leaving empty space */}
+                      <col style={{ width: '6%' }} />  {/* Qty */}
+                      <col style={{ width: '17%' }} /> {/* Inbound — more room for handwriting */}
+                      <col style={{ width: '17%' }} /> {/* Remark — more room for handwriting */}
+                    </colgroup>
                     <thead>
                       <tr>
                         <th style={headerCellStyle}>PO ID</th>
