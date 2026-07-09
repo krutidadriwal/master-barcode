@@ -15,8 +15,9 @@ const googleDriveService = new GoogleDriveService();
 // Vercel hard-caps the total serverless request body at ~4.5MB regardless of
 // plan — this is enforced by the platform before our code runs, so multer's
 // own limit must stay well under that for 3 files in one request. The
-// frontend (WeightConfirmationPanel) also downscales/re-encodes photos
-// client-side before upload so real phone photos (often 3-8MB) fit comfortably.
+// frontend (WeightConfirmationPanel) uploads its up-to-15 photos in batches of
+// 3 (UPLOAD_BATCH_SIZE) and downscales/re-encodes each one client-side, so
+// `files: 3` here is a per-batch cap, not the overall per-shipment photo limit.
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1.4 * 1024 * 1024, files: 3 } });
 
 function runMulter(req: any, res: any): Promise<void> {

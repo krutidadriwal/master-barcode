@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Scale, ChevronUp, ChevronDown, Plus, X, Camera, Image as ImageIcon, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 
-const MAX_PHOTOS = 3;
+const MAX_PHOTOS = 15;
+// Vercel serverless functions cap a single request body at ~4.5MB (see the
+// compression note below) — with up to 15 photos we can no longer fit them
+// all in one multipart request no matter how hard we compress. Upload in
+// batches instead; each batch stays comfortably under that cap.
+const UPLOAD_BATCH_SIZE = 3;
 
 interface WeightRow {
   id: string;
@@ -25,8 +30,9 @@ const isRowFilled = (r: WeightRow) =>
 // Vercel serverless functions reject request bodies over ~4.5MB outright, before
 // our code (or multer's own file-size limit) ever runs — a constraint that doesn't
 // exist on the local Express dev server, so it's easy to miss. Phone photos are
-// routinely 3-8MB each, which would blow that budget with 2-3 of them in one
-// request. Downscale + re-encode client-side so 3 photos comfortably fit.
+// routinely 3-8MB each, which would blow that budget even within a single
+// UPLOAD_BATCH_SIZE-sized batch. Downscale + re-encode client-side so each
+// batch comfortably fits.
 const MAX_PHOTO_DIMENSION = 1600;
 const PHOTO_JPEG_QUALITY = 0.75;
 
@@ -149,11 +155,16 @@ export function WeightConfirmationPanel({ shipmentId, batchId, cartonCount, onCo
       const weightsData = await weightsRes.json().catch(() => ({}));
       if (!weightsRes.ok) throw new Error(weightsData.error || `HTTP ${weightsRes.status}`);
 
-      if (images.length > 0) {
+      // Upload in batches of UPLOAD_BATCH_SIZE — a single request with all 15
+      // photos could exceed Vercel's ~4.5MB body cap; each batch stays under it.
+      // All batches land in the same Drive folder (per-shipment, keyed by
+      // batch_id + shipment_id), so this is safe to repeat sequentially.
+      for (let i = 0; i < images.length; i += UPLOAD_BATCH_SIZE) {
+        const batch = images.slice(i, i + UPLOAD_BATCH_SIZE);
         const form = new FormData();
         form.set('shipment_id', shipmentId);
         form.set('batch_id', batchId);
-        images.forEach(img => form.append('photos', img));
+        batch.forEach(img => form.append('photos', img));
         const photosRes = await fetch('/api/shipment/upload-weight-photos', { method: 'POST', body: form });
         const photosData = await photosRes.json().catch(() => ({}));
         if (!photosRes.ok) throw new Error(photosData.error || `HTTP ${photosRes.status}`);

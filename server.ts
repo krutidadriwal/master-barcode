@@ -43,7 +43,10 @@ async function startServer() {
   // platform limit, not something multer/Express enforce) — kept in sync with
   // api/shipment-upload-weight-photos.ts even though this local Express server
   // isn't subject to it, so behavior matches between dev and prod. The frontend
-  // also downscales/re-encodes photos client-side before upload for the same reason.
+  // uploads photos in batches of 3 (see UPLOAD_BATCH_SIZE in
+  // WeightConfirmationPanel.tsx) and downscales/re-encodes each one client-side,
+  // so `files: 3` here is a per-request (per-batch) cap, not the overall photo
+  // limit — up to 15 photos total arrive as up to 5 sequential requests.
   const weightPhotoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1.4 * 1024 * 1024, files: 3 } });
   const productionOrderRepository = new ProductionOrderRepository();
   const productionOrderSyncService = new ProductionOrderGSheetSyncService();
