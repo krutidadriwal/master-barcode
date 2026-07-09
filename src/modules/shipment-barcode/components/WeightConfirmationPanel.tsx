@@ -17,9 +17,10 @@ interface WeightConfirmationPanelProps {
   onCompletionChange?: (complete: boolean) => void;
 }
 
+// Listed weight is often not available (not every vendor provides it) — only
+// the measured (physically weighed) value is required to confirm a carton.
 const isRowFilled = (r: WeightRow) =>
-  r.listedWeight.trim() !== '' && r.measuredWeight.trim() !== '' &&
-  parseFloat(r.listedWeight) > 0 && parseFloat(r.measuredWeight) > 0;
+  r.measuredWeight.trim() !== '' && parseFloat(r.measuredWeight) > 0;
 
 // Vercel serverless functions reject request bodies over ~4.5MB outright, before
 // our code (or multer's own file-size limit) ever runs — a constraint that doesn't
