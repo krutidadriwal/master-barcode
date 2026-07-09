@@ -544,6 +544,8 @@ async function startServer() {
           invoice_no:   s.invoice_no,
           total_units:  s.total_units,
           carton_count: s.carton_count,
+          listed_weight: s.listed_weight ?? null,
+          actual_weight: s.actual_weight ?? null,
           line_items:   (linesByShipment[s.shipment_id] || []).map(l => ({
             line_id:          l.line_id,
             sku:              l.sku,

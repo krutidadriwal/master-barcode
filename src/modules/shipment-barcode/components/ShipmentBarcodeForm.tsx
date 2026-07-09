@@ -63,6 +63,8 @@ interface VendorShipment {
   invoice_no: string;
   total_units: number;
   carton_count: number;
+  listed_weight?: number | null;
+  actual_weight?: number | null;
   line_items: LineItem[];
 }
 
@@ -143,7 +145,10 @@ export function ShipmentBarcodeForm() {
 
   // ── Active shipment lines (re-populated locally on scan-start or restore) ─
   const [activeShipmentLines, setActiveShipmentLines] = useState<ShipmentLine[]>([]);
-  const [activeCartonCount, setActiveCartonCount] = useState<number>(1);
+  // Weights already saved in Supabase for the active shipment (from a prior
+  // confirmation) — passed to WeightConfirmationPanel so staff can see and
+  // simply re-confirm them instead of re-entering everything from scratch.
+  const [activeExistingWeights, setActiveExistingWeights] = useState<{ listed: number | null; actual: number | null }>({ listed: null, actual: null });
   // Air shipments must have every carton's listed + measured weight filled in
   // (via WeightConfirmationPanel) before scanning is allowed. Irrelevant for sea.
   const [weightsConfirmed, setWeightsConfirmed] = useState(false);
@@ -213,7 +218,7 @@ export function ShipmentBarcodeForm() {
         for (const l of lines) if (l.already_received > 0) preloaded[l.sku] = l.already_received;
         setActiveShipmentLines(lines);
         setCountingQty(preloaded);
-        setActiveCartonCount(shipment.carton_count || 1);
+        setActiveExistingWeights({ listed: shipment.listed_weight ?? null, actual: shipment.actual_weight ?? null });
         setScanStatus({
           type: 'idle',
           message: `Shipment "${activeShipmentId}" restored — ${lines.length} SKU${lines.length !== 1 ? 's' : ''}. Ready to scan.`,
@@ -418,7 +423,7 @@ export function ShipmentBarcodeForm() {
     }
     setActiveShipmentLines(lines);
     setCountingQty(preloaded);
-    setActiveCartonCount(shipment.carton_count || 1);
+    setActiveExistingWeights({ listed: shipment.listed_weight ?? null, actual: shipment.actual_weight ?? null });
     setWeightsConfirmed(false);
     setExcessQtyFrequency({});
     setNoProductData([]);
@@ -927,7 +932,8 @@ export function ShipmentBarcodeForm() {
               key={activeShipmentId}
               shipmentId={activeShipmentId}
               batchId={activeBatchId}
-              cartonCount={activeCartonCount}
+              existingListedWeight={activeExistingWeights.listed}
+              existingActualWeight={activeExistingWeights.actual}
               onCompletionChange={setWeightsConfirmed}
             />
           )}

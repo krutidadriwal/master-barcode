@@ -17,7 +17,9 @@ interface WeightRow {
 interface WeightConfirmationPanelProps {
   shipmentId: string;
   batchId: string;
-  cartonCount?: number;
+  /** Weights already saved in Supabase for this shipment from a prior confirmation, if any. */
+  existingListedWeight?: number | null;
+  existingActualWeight?: number | null;
   /** Fires whenever the confirmed state changes. */
   onCompletionChange?: (complete: boolean) => void;
 }
@@ -70,17 +72,26 @@ async function compressImage(file: File): Promise<File> {
  * vendor_shipments.drive_link. Both are Supabase-only columns — never sent
  * to or read from Apps Script.
  */
-export function WeightConfirmationPanel({ shipmentId, batchId, cartonCount, onCompletionChange }: WeightConfirmationPanelProps) {
-  const makeRow = (): WeightRow => ({
+export function WeightConfirmationPanel({ shipmentId, batchId, existingListedWeight, existingActualWeight, onCompletionChange }: WeightConfirmationPanelProps) {
+  const makeRow = (listedWeight = '', measuredWeight = ''): WeightRow => ({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    listedWeight: '',
-    measuredWeight: '',
+    listedWeight,
+    measuredWeight,
   });
 
-  const [rows, setRows] = useState<WeightRow[]>(() => {
-    const n = Math.max(1, cartonCount || 1);
-    return Array.from({ length: n }, () => makeRow());
-  });
+  // A weight already recorded in Supabase (from a prior confirmation) is only
+  // stored as a shipment-wide total, not a per-carton breakdown — so it's
+  // loaded into a single row showing that total directly. Staff can just hit
+  // Confirm to re-save it as-is, or edit it before confirming.
+  const hasExistingWeight = (existingActualWeight ?? 0) > 0 || (existingListedWeight ?? 0) > 0;
+  // Always start with a single row, even for shipments with hundreds of
+  // cartons — pre-generating one row per carton (via cartonCount) made the
+  // panel unusable at scale. Staff add rows manually via "Add Carton" only
+  // for the cartons they actually want to record separately.
+  const [rows, setRows] = useState<WeightRow[]>(() => [makeRow(
+    existingListedWeight ? String(existingListedWeight) : '',
+    existingActualWeight ? String(existingActualWeight) : ''
+  )]);
   const [expanded, setExpanded] = useState(true);
   const [images, setImages] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
@@ -91,6 +102,24 @@ export function WeightConfirmationPanel({ shipmentId, batchId, cartonCount, onCo
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const allWeighed = rows.length > 0 && rows.every(isRowFilled);
+
+  // existingListedWeight/existingActualWeight arrive from an async batch-detail
+  // fetch in the parent, which typically resolves *after* this panel has
+  // already mounted (and its useState initializer above has already run with
+  // nothing to prefill). Back-fill once the real values show up — but only
+  // while every row is still untouched, so we never clobber user input.
+  useEffect(() => {
+    if (!hasExistingWeight) return;
+    setRows(prev => {
+      const pristine = prev.every(r => r.listedWeight === '' && r.measuredWeight === '');
+      if (!pristine) return prev;
+      return [makeRow(
+        existingListedWeight ? String(existingListedWeight) : '',
+        existingActualWeight ? String(existingActualWeight) : ''
+      )];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingListedWeight, existingActualWeight, hasExistingWeight]);
 
   useEffect(() => {
     const urls = images.map(f => URL.createObjectURL(f));
@@ -204,12 +233,29 @@ export function WeightConfirmationPanel({ shipmentId, batchId, cartonCount, onCo
               Incomplete — scanning locked
             </span>
           )}
+          {hasExistingWeight && (
+            <span className="text-[9px] font-mono text-sky-400">
+              (saved: {existingListedWeight ? existingListedWeight.toFixed(2) : '—'} / {existingActualWeight ? existingActualWeight.toFixed(2) : '—'} kg)
+            </span>
+          )}
         </div>
         {expanded ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
       </button>
 
       {expanded && (
         <div className="border-t border-slate-800 p-4 space-y-4">
+          {hasExistingWeight && (
+            <div className="flex items-center gap-2 bg-sky-500/10 border border-sky-500/30 rounded-lg px-3 py-2 text-[11px] text-sky-300">
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                Previously recorded: Listed{' '}
+                <strong className="font-mono">{existingListedWeight ? existingListedWeight.toFixed(2) : '—'} kg</strong>
+                {' '}/ Measured{' '}
+                <strong className="font-mono">{existingActualWeight ? existingActualWeight.toFixed(2) : '—'} kg</strong>
+                {' '}— loaded below, edit if needed or just confirm to proceed.
+              </span>
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse min-w-[420px]">
               <thead>
