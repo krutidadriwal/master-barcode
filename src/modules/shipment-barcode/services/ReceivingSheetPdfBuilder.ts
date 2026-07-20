@@ -47,7 +47,13 @@ const CONTENT_BOTTOM = PAGE_H - MARGIN;
 // Header barcode geometry — matches the on-screen preview's proportions.
 const BARCODE_HEIGHT_MM = 15;
 const BARCODE_MODULE_WIDTH_MM = 0.3; // standard safe bar width for reliable scanning
-const BARCODE_PX_PER_MM = 12;        // ~300 DPI equivalent raster resolution
+// 10 (not the previous 12) so BARCODE_MODULE_WIDTH_MM * BARCODE_PX_PER_MM lands
+// on a whole pixel (3px, not 3.6px). Canvas fillRect() anti-aliases any edge
+// that doesn't sit on an integer pixel boundary, which turns a bar edge into a
+// soft gray gradient instead of a hard black/white transition — exactly the
+// kind of edge a laser scanner's fixed-threshold reflectance detector can
+// misread, even though it's imperceptible to a phone camera's own decoder.
+const BARCODE_PX_PER_MM = 10;        // ~254 DPI equivalent raster resolution
 
 // Fixed header block height (mm) reserved on every page: barcode label + the
 // barcode image + its value line, plus the divider and page-indicator line.
@@ -104,8 +110,11 @@ function renderBarcodePng(value: string): { dataUrl: string; aspect: number } | 
   try {
     const format = BarcodeGeneratorService.detectFormat(v);
     const barcodeFormat = format === 'EAN13' ? 'EAN13' : format === 'UPC' ? 'UPC' : 'CODE128';
-    const heightPx = BARCODE_HEIGHT_MM * BARCODE_PX_PER_MM;
-    const moduleWidthPx = BARCODE_MODULE_WIDTH_MM * BARCODE_PX_PER_MM;
+    // Rounded to whole pixels — a canvas rect drawn at a fractional
+    // coordinate gets anti-aliased at the edge by the 2D context, which is
+    // exactly the soft-edge distortion a laser scanner is least tolerant of.
+    const heightPx = Math.round(BARCODE_HEIGHT_MM * BARCODE_PX_PER_MM);
+    const moduleWidthPx = Math.round(BARCODE_MODULE_WIDTH_MM * BARCODE_PX_PER_MM);
     const canvas = document.createElement('canvas');
     JsBarcode(canvas, v, {
       format: barcodeFormat,

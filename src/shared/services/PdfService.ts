@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { swapBarcodeSvgsForImages } from '../utilities/svgRasterize';
 
 export interface PdfExportOptions {
   filename: string;
@@ -210,14 +211,22 @@ export class PdfService {
       throw new Error(`Failed to clone layout: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // Create a robust hidden container for rendering clones
+    // Create a robust hidden container for rendering clones.
+    // Positioned AT the viewport origin (fixed) and hidden via opacity/
+    // z-index instead of a large negative offset — an absolutely-positioned
+    // element at -9999px,-9999px expands the document's own scrollable
+    // bounds by that much, and html2canvas has documented issues correctly
+    // locating/cropping elements that far outside its cloned viewport.
     const isolatedContainer = document.createElement('div');
-    isolatedContainer.style.position = 'absolute';
-    isolatedContainer.style.left = '-9999px';
-    isolatedContainer.style.top = '-9999px';
+    isolatedContainer.style.position = 'fixed';
+    isolatedContainer.style.left = '0';
+    isolatedContainer.style.top = '0';
     isolatedContainer.style.width = '1000mm';
     isolatedContainer.style.height = '1000mm';
     isolatedContainer.style.backgroundColor = '#ffffff';
+    isolatedContainer.style.opacity = '0';
+    isolatedContainer.style.zIndex = '-1';
+    isolatedContainer.style.pointerEvents = 'none';
     document.body.appendChild(isolatedContainer);
 
     // Create jsPDF instance
@@ -255,6 +264,17 @@ export class PdfService {
       for (let i = 0; i < clones.length; i++) {
         const clone = clones[i];
         isolatedContainer.appendChild(clone);
+
+        // The barcode's human-readable text is an SVG <text> element
+        // (JsBarcode's displayValue, using the OCR-B web font). html2canvas's
+        // own text-layout engine is known to mishandle SVG <text> with custom
+        // @font-face fonts (drops it, wrong font, or — with
+        // foreignObjectRendering, which was tried and reverted because it
+        // blanked the whole capture — nothing at all). Pre-rasterizing just
+        // that element to a plain PNG <img> (now that `clone` has real layout
+        // via isolatedContainer) sidesteps the issue entirely: html2canvas
+        // only ever has to copy pixels for it.
+        await swapBarcodeSvgsForImages(clone);
 
         const canvas = await html2canvas(clone, {
           scale: dpi / 96,

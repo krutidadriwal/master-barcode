@@ -615,11 +615,15 @@ export function ProductionOrderBarcodeForm() {
         </div>
       )}
 
-      {/* Off-screen PDF capture container */}
+      {/* Off-screen PDF capture container.
+          Positioned AT the viewport origin and hidden via opacity/z-index
+          instead of a large negative offset (the old `left: -9999px`) —
+          html2canvas has documented issues correctly locating/cropping
+          elements that far outside its cloned viewport. */}
       {printProduct && quantity > 0 && (
         <div
           ref={pdfContainerRef}
-          style={{ position: 'fixed', left: '-9999px', top: 0, background: '#fff', pointerEvents: 'none' }}
+          style={{ position: 'fixed', left: 0, top: 0, background: '#fff', opacity: 0, zIndex: -1, pointerEvents: 'none' }}
           aria-hidden="true"
         >
           {Array.from({ length: quantity }).map((_, i) => (

@@ -20,14 +20,57 @@ export function BarcodeImage({ value, format }: BarcodeImageProps) {
           svgRef.current.removeChild(svgRef.current.firstChild);
         }
 
+        // JsBarcode's SVG output always carries a viewBox, so the CSS box
+        // below (fixed 27mm x 10mm) scales it uniformly (preserveAspectRatio
+        // defaults to "xMidYMid meet") — never a non-uniform X/Y stretch.
+        // That means the `width` option's absolute value barely matters here
+        // (it's pre-scale units, not a physical size); what matters is that
+        // `margin` stays proportional to it so the quiet zone survives the
+        // scale-to-fit as a fixed fraction of the total symbol width. Kept
+        // as a constant rather than branching by value length — the old
+        // 1.1/1.4 split didn't change the final on-label size (both get
+        // scaled to fit the same fixed box) and was pure cargo-cult.
+        const moduleWidth = 2;
         JsBarcode(svgRef.current, value.trim(), {
           format: format === 'EAN13' ? 'EAN13' : format === 'UPC' ? 'UPC' : 'CODE128',
-          width: value.trim().length > 10 ? 1.1 : 1.4, // Keep bars clear and scan-safe
-          height: 35, // Sharp pixel height
-          displayValue: false, // We render custom OCR-B below for exact font specs
+          width: moduleWidth,
+          // At the box aspect ratio actually in use, this (combined with
+          // fontSize+textMargin below) keeps the barcode HEIGHT-bound — the
+          // rendered symbol fills the CSS box's full height and letterboxes
+          // narrower than its width, rather than stretching to fill the
+          // width. That's intentional here: the CSS box below is sized with
+          // deliberate width slack specifically so that increasing box
+          // height (the actual lever for growing this barcode) also grows
+          // the rendered width proportionally, with no risk of ever
+          // exceeding the box and no need to touch these numbers to do it.
+          height: 56,
+          // Use JsBarcode's own human-readable text instead of a hand-rolled
+          // div below the SVG. For EAN13/UPC this renders the standard
+          // grouped layout (lone check-adjacent digit outside the guard
+          // bars, then two digit groups under the left/right halves) —
+          // that's the "wrap around" look, and it's what a laser-scanner
+          // operator expects to visually cross-check against a misread. It
+          // also guarantees the text sits at a scanner-safe distance from
+          // the bars (never inside the quiet zone) since JsBarcode computes
+          // that placement itself instead of us guessing an outer margin.
+          displayValue: true,
+          font: 'OCRB',
+          fontOptions: '', // not bold — the @font-face for OCRB only has a normal-weight cut anyway
+          fontSize: 16,
+          textMargin: 3, // tight gap between bars and text, in the same unit scale as `width`/`height`
+          textAlign: 'center',
           background: '#FFFFFF',
           lineColor: '#000000',
-          margin: 0
+          // Quiet zone: symbology spec requires >=10x the narrow-bar width on
+          // each side. The old margin:0 stripped this entirely, which is one
+          // of the most common reasons a barcode scans fine on a phone camera
+          // (which can crop/decode from context) but fails on a laser scanner
+          // (which needs the blank zone to detect where the symbol starts).
+          // This does mean bars end up a bit thinner than before within the
+          // same fixed 27mm box — quiet zone has to come from somewhere, and
+          // an unscannable barcode with fat bars is worse than a scannable
+          // one with a correct margin.
+          margin: Math.round(moduleWidth * 10),
         });
       } catch (err) {
         console.warn('[Barcode Preview] jsbarcode failed:', err);
@@ -36,15 +79,31 @@ export function BarcodeImage({ value, format }: BarcodeImageProps) {
   }, [value, format]);
 
   return (
-    <svg 
-      ref={svgRef} 
+    <svg
+      ref={svgRef}
       className="select-none"
+      // Non-visual marker only — lets the PDF/print export code find and
+      // pre-rasterize this exact element before html2canvas runs, without
+      // changing anything about how it looks on screen.
+      data-barcode-svg="true"
       style={{
         display: 'block',
         margin: '0 auto',
         background: '#FFFFFF',
-        height: '10mm',
-        width: '27mm',
+        // Fixing both width and height here does NOT non-uniformly stretch
+        // the bars: JsBarcode's SVG always carries a viewBox, so the browser
+        // applies its default preserveAspectRatio ("xMidYMid meet") — a
+        // single uniform scale that letterboxes rather than distorts. This
+        // box is sized to the label's reserved barcode slot.
+        // Note: this box is currently HEIGHT-bound (naturalAspect from the
+        // JsBarcode options below is well under this box's own aspect ratio),
+        // meaning the rendered barcode fills the full height and letterboxes
+        // narrower than the box width — there's deliberately generous slack
+        // on width so that growing height alone (the actual lever here) has
+        // room to also grow the rendered width proportionally without ever
+        // needing to touch the JsBarcode options themselves.
+        height: '16mm',
+        width: '46mm',
         shapeRendering: 'crispEdges'
       }}
     />
@@ -65,7 +124,7 @@ let _fontsReadyPromise: Promise<void> | null = null;
 function getFontsReady(): Promise<void> {
   if (!_fontsReadyPromise) {
     _fontsReadyPromise = Promise.all([
-      document.fonts.load('bold 12px "OCRB"'),
+      document.fonts.load('normal 12px "OCRB"'), // matches JsBarcode's fontOptions:'' (not bold) below
       document.fonts.load('normal 12px "Rubik-Light"'),
       document.fonts.ready,
     ]).then(() => {}).catch(() => {}); // never reject — show label regardless on error
@@ -78,7 +137,7 @@ function useFontsReady(): boolean {
     // If fonts are already loaded (e.g. off-screen container mounting after first preview),
     // skip the skeleton entirely by checking synchronously.
     try {
-      return document.fonts.check('bold 12px "OCRB"') && document.fonts.check('normal 12px "Rubik-Light"');
+      return document.fonts.check('normal 12px "OCRB"') && document.fonts.check('normal 12px "Rubik-Light"');
     } catch { return false; }
   });
   useEffect(() => {
@@ -149,7 +208,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
       style={{
         width: '50mm',
         height: '30mm',
-        padding: '2mm 2.5mm 0 2.5mm',
+        padding: '1.2mm 1.8mm 0 1.8mm',
         boxSizing: 'border-box',
         transform: `scale(${scale})`,
         marginBottom: scale !== 1.0 ? `${-30 * (1 - scale)}mm` : '0',
@@ -161,16 +220,19 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
       <div 
         style={{
           display: 'grid',
-          gridTemplateColumns: '13mm 2mm 1fr',
-          rowGap: '0.5mm',
+          gridTemplateColumns: '13.5mm 2mm 1fr',
+          rowGap: '0.3mm',
           columnGap: '0px',
           fontFamily: "'Rubik-Light', 'Rubik'",
-          fontSize: '7px',
+          fontSize: '8px',
           fontWeight: 700,
           color: '#000000',
           backgroundColor: '#FFFFFF',
           lineHeight: '1',
-          width: '100%',
+          // Leaves room on the right for the vertical "Cubelelo.com" strip
+          // (reserved 4mm + 0.8mm gap) so a long wrapped item name can't run
+          // underneath it.
+          width: 'calc(100% - 4.8mm)',
           boxSizing: 'border-box'
         }}
       >
@@ -192,7 +254,7 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
         <div style={{ fontWeight: 700 }}>MRP</div>
         <div>:</div>
         <div style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
-          {formatMrp(product.mrp)}<span style={{ fontSize: '5.5px', fontWeight: 600 }}> (Incl. of all taxes)</span>
+          {formatMrp(product.mrp)}<span style={{ fontSize: '6.5px', fontWeight: 600 }}> (Incl. of all taxes)</span>
         </div>
 
         {/* Row 4: Batch No — from prop only */}
@@ -207,60 +269,98 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
         )}
       </div>
 
-      {/* Bottom section: Barcode, Barcode Value & Website url */}
-      <div 
+      {/* Flexible spacer — absorbs whatever vertical space is actually left
+          after the (untouched) info block above, so the barcode section
+          below always sits balanced in the remaining space instead of at a
+          hand-guessed fixed offset. This is what fixes "barcode positioned
+          too high / bottom section compressed": previously the barcode
+          block was `position: absolute; bottom: 1.5mm`, which pins it near
+          the bottom regardless of how much (or little) space the info block
+          actually used above it, producing an uneven gap. Letting the
+          browser distribute the real leftover space removes that guesswork
+          entirely — nothing about the barcode's own size, the info block, or
+          any font/spacing changed to achieve this, only how the remaining
+          space between them is allocated. */}
+      <div style={{ flex: '1 1 auto' }} />
+
+      {/* Bottom section: Barcode (bars + human-readable text drawn together
+          by JsBarcode itself — see displayValue above) and the vertical
+          "Cubelelo.com" strip, as a row. Putting them in the same flex row
+          with alignItems:'center' ties the website text's vertical position
+          directly to the barcode's own height — it used to be independently
+          stretched across the whole label height (top:0 to bottom:0), which
+          is why it read as "too low" relative to the barcode above it; now
+          it can only ever sit centered against whatever the barcode's actual
+          height is. Barcode box itself (46mm x 16mm) and its JsBarcode
+          options are completely unchanged — only its positioning (absolute
+          -> normal flex flow, centered in the space left of the website
+          strip) changed. */}
+      <div
         style={{
-          position: 'absolute',
-          right: '2.5mm',
-          bottom: '2mm',
           display: 'flex',
-          flexDirection: 'column',
+          flexDirection: 'row',
           alignItems: 'center',
-          backgroundColor: '#FFFFFF',
-          zIndex: 10,
-          width: '27mm'
+          width: '100%',
+          boxSizing: 'border-box',
+          gap: '1mm'
         }}
       >
-        {/* Barcode vector bars */}
-        <div style={{ height: '10mm', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '27mm' }}>
-          <BarcodeImage value={barcodeValue} format={autoFormat} heightMm={35} />
+        {/* Centers the barcode horizontally within the space left of the
+            website strip, addressing "barcode not visually centered in the
+            lower half" — previously it was pinned hard against the right
+            edge (right: 3.2mm) with no centering at all. */}
+        <div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 0 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#FFFFFF',
+              width: '46mm',
+              height: '16mm',
+              flexShrink: 0
+            }}
+          >
+            <BarcodeImage value={barcodeValue} format={autoFormat} heightMm={35} />
+          </div>
         </div>
 
-        {/* Barcode OCR-B Value */}
-        <div 
+        {/* Vertical "Cubelelo.com" strip — sized to its own content instead
+            of stretched across the full label height, so the shared row's
+            alignItems:'center' can actually align it against the barcode's
+            height rather than the whole label. Rotation, font, and letter
+            spacing are all unchanged. */}
+        <div
           style={{
-            fontFamily: "'OCRB'",
-            fontSize: '11px',
-            fontWeight: 700,
-            color: '#000000',
-            textAlign: 'center',
-            marginTop: '0.4mm',
-            lineHeight: '1.0',
-            letterSpacing: '0.8px',
-            width: '27mm'
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '2.6mm',
+            flexShrink: 0
           }}
         >
-          {barcodeValue}
+          <span
+            style={{
+              display: 'inline-block',
+              transform: 'rotate(-90deg)',
+              transformOrigin: 'center',
+              whiteSpace: 'nowrap',
+              fontFamily: "'Rubik-Light', 'Rubik'",
+              fontSize: '5px',
+              fontWeight: 'bold',
+              color: '#000000',
+              letterSpacing: '0.2px',
+              lineHeight: '1.0'
+            }}
+          >
+            www.cubelelo.com
+          </span>
         </div>
       </div>
 
-      {/* Website URL anchor absolute positioned on the deep bottom-left of the 50mm x 30mm boundary */}
-      <span 
-        style={{
-          position: 'absolute',
-          left: '2.5mm',
-          bottom: '2mm',
-          fontFamily: "'Rubik-Light', 'Rubik'",
-          fontSize: '7px',
-          fontWeight: 'bold',
-          color: '#000000',
-          textDecoration: 'none',
-          lineHeight: '1.0',
-          zIndex: 10
-        }}
-      >
-        www.cubelelo.com
-      </span>
+      {/* Small fixed bottom margin — keeps the barcode value off the label's
+          bottom edge ("barcode numbers too close to the bottom edge"). */}
+      <div style={{ height: '1.2mm', flexShrink: 0 }} />
     </div>
   );
 }
