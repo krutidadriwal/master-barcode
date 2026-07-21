@@ -14,6 +14,8 @@ export interface ReceivingSheetLine {
   synced_at?: string;
 }
 
+const CHUNK = 200;
+
 /**
  * Backs the "Download Receiving Sheet" feature. Data originates from the
  * 'Inventory' Google Sheet's "Purchase Orders" tab (a separate spreadsheet
@@ -96,20 +98,37 @@ export class SupabaseReceivingSheetRepository {
   }
 
   // ── Sync (write from Apps Script data) ──────────────────────────────────────
+  // Chunked multi-row upserts (not one awaited query per row) — this is called
+  // as part of /api/shipment/sync, which runs under Vercel's 10s function
+  // timeout. Sequential single-row round trips for 100+ lines blew past that
+  // budget. Rows are deduped by line_id first since a multi-row INSERT ...
+  // ON CONFLICT errors if the same key appears twice in one statement.
 
   async syncLines(rows: ReceivingSheetLine[]): Promise<number> {
     if (!rows.length) return 0;
     await this.ensureTable();
 
+    const byLineId = new Map<string, ReceivingSheetLine>();
+    for (const l of rows) byLineId.set(l.line_id, l);
+    const deduped = Array.from(byLineId.values());
+
     if (this.pgPool) {
       const client = await this.pgPool.connect();
       try {
         await client.query('BEGIN');
-        for (const l of rows) {
+        for (let i = 0; i < deduped.length; i += CHUNK) {
+          const chunk = deduped.slice(i, i + CHUNK);
+          const placeholders = chunk.map((_, idx) => {
+            const b = idx * 9;
+            return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},NOW())`;
+          }).join(',');
+          const params = chunk.flatMap(l => [
+            l.line_id, l.po_id, l.po_ref_no, l.item_sku, l.ean_fnsku, l.item_name, l.qty, l.pending_qty, l.shipment_id,
+          ]);
           await client.query(
             `INSERT INTO inventory_po_lines
                (line_id, po_id, po_ref_no, item_sku, ean_fnsku, item_name, qty, pending_qty, shipment_id, synced_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+             VALUES ${placeholders}
              ON CONFLICT (line_id) DO UPDATE SET
                po_id       = EXCLUDED.po_id,
                po_ref_no   = EXCLUDED.po_ref_no,
@@ -120,7 +139,7 @@ export class SupabaseReceivingSheetRepository {
                pending_qty = EXCLUDED.pending_qty,
                shipment_id = EXCLUDED.shipment_id,
                synced_at   = NOW()`,
-            [l.line_id, l.po_id, l.po_ref_no, l.item_sku, l.ean_fnsku, l.item_name, l.qty, l.pending_qty, l.shipment_id]
+            params
           );
         }
         await client.query('COMMIT');
@@ -134,7 +153,7 @@ export class SupabaseReceivingSheetRepository {
     }
 
     if (this.supabaseClient) {
-      const upsertRows = rows.map(l => ({ ...l, synced_at: new Date().toISOString() }));
+      const upsertRows = deduped.map(l => ({ ...l, synced_at: new Date().toISOString() }));
       const { error } = await this.supabaseClient
         .from('inventory_po_lines')
         .upsert(upsertRows, { onConflict: 'line_id', ignoreDuplicates: false });

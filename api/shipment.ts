@@ -74,6 +74,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const scriptUrl = process.env.APP_SCRIPTS_URL;
       if (!scriptUrl?.trim()) return res.status(503).json({ error: 'APP_SCRIPTS_URL is not configured.' });
 
+      // Kicked off now, awaited at the end — it hits a completely separate Apps
+      // Script deployment (INVENTORY_SCRIPTS_URL) and Supabase table, so there's
+      // no reason to pay for its ~5s round trip sequentially after this one.
+      // This whole request runs under Vercel's 10s function timeout.
+      const receivingSheetPromise = syncReceivingSheetBestEffort();
+
       const r = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -137,7 +143,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const lCount = await vendorShipmentRepo.syncLines(lines);
 
       // Also sync the Download Receiving Sheet table — best-effort, does not fail this request.
-      const receivingSheetResult = await syncReceivingSheetBestEffort();
+      const receivingSheetResult = await receivingSheetPromise;
 
       return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount, receiving_sheet: receivingSheetResult });
     }

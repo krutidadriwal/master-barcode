@@ -42,6 +42,19 @@ export interface VendorShipmentLine {
   updated_at?: string;
 }
 
+const CHUNK = 200;
+
+// A multi-row INSERT ... ON CONFLICT DO UPDATE errors ("cannot affect row a
+// second time") if the same conflict key appears twice in one statement.
+// The sheet feed can legitimately repeat a key across rows (e.g. a corrected
+// line further down) — keep only the last occurrence, matching the previous
+// sequential per-row upsert's last-write-wins behavior.
+function dedupeByKey<T>(rows: T[], keyFn: (row: T) => string): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows) byKey.set(keyFn(row), row);
+  return Array.from(byKey.values());
+}
+
 export class SupabaseVendorShipmentRepository {
   private pgPool: Pool | null = null;
   private supabaseClient: SupabaseClient | null = null;
@@ -162,21 +175,35 @@ export class SupabaseVendorShipmentRepository {
   }
 
   // ── Sync (write from Apps Script data) ──────────────────────────────────────
+  // Chunked multi-row upserts (not one awaited query per row) — this endpoint
+  // runs under Vercel's 10s function timeout (vercel.json), and a shipment
+  // sync can carry 600+ lines. Sequential single-row round trips blew past
+  // that budget, silently truncating the sync before vendor_shipments/lines
+  // finished writing. Mirrors the batching pattern in SupabasePurchaseOrderRepository.
 
   async syncBatches(rows: VendorBatch[]): Promise<number> {
     await this.dropLegacyConstraints();
     if (!rows.length) return 0;
     await this.ensureTables();
+    rows = dedupeByKey(rows, b => b.batch_id);
 
     if (this.pgPool) {
       const client = await this.pgPool.connect();
       try {
         await client.query('BEGIN');
-        for (const b of rows) {
+        for (let i = 0; i < rows.length; i += CHUNK) {
+          const chunk = rows.slice(i, i + CHUNK);
+          const placeholders = chunk.map((_, idx) => {
+            const b = idx * 6;
+            return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},NOW())`;
+          }).join(',');
+          const params = chunk.flatMap(b => [
+            b.batch_id, b.status, b.expected_delivery, b.actual_delivery, b.carrier, b.remarks,
+          ]);
           await client.query(
             `INSERT INTO vendor_shipment_batches
                (batch_id, status, expected_delivery, actual_delivery, carrier, remarks, synced_at)
-             VALUES ($1,$2,$3,$4,$5,$6,NOW())
+             VALUES ${placeholders}
              ON CONFLICT (batch_id) DO UPDATE SET
                status = EXCLUDED.status,
                expected_delivery = EXCLUDED.expected_delivery,
@@ -184,7 +211,7 @@ export class SupabaseVendorShipmentRepository {
                carrier           = EXCLUDED.carrier,
                remarks           = EXCLUDED.remarks,
                synced_at         = NOW()`,
-            [b.batch_id, b.status, b.expected_delivery, b.actual_delivery, b.carrier, b.remarks]
+            params
           );
         }
         await client.query('COMMIT');
@@ -211,16 +238,25 @@ export class SupabaseVendorShipmentRepository {
   async syncShipments(rows: VendorShipment[]): Promise<number> {
     if (!rows.length) return 0;
     await this.ensureTables();
+    rows = dedupeByKey(rows, s => s.shipment_id);
 
     if (this.pgPool) {
       const client = await this.pgPool.connect();
       try {
         await client.query('BEGIN');
-        for (const s of rows) {
+        for (let i = 0; i < rows.length; i += CHUNK) {
+          const chunk = rows.slice(i, i + CHUNK);
+          const placeholders = chunk.map((_, idx) => {
+            const b = idx * 7;
+            return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},NOW())`;
+          }).join(',');
+          const params = chunk.flatMap(s => [
+            s.shipment_id, s.batch_id, s.vendor_code, s.invoice_no, s.invoice_date, s.carton_count, s.total_units,
+          ]);
           await client.query(
             `INSERT INTO vendor_shipments
                (shipment_id, batch_id, vendor_code, invoice_no, invoice_date, carton_count, total_units, synced_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+             VALUES ${placeholders}
              ON CONFLICT (shipment_id) DO UPDATE SET
                batch_id     = EXCLUDED.batch_id,
                vendor_code  = EXCLUDED.vendor_code,
@@ -229,7 +265,7 @@ export class SupabaseVendorShipmentRepository {
                carton_count = EXCLUDED.carton_count,
                total_units  = EXCLUDED.total_units,
                synced_at    = NOW()`,
-            [s.shipment_id, s.batch_id, s.vendor_code, s.invoice_no, s.invoice_date, s.carton_count, s.total_units]
+            params
           );
         }
         await client.query('COMMIT');
@@ -256,16 +292,26 @@ export class SupabaseVendorShipmentRepository {
   async syncLines(rows: VendorShipmentLine[]): Promise<number> {
     if (!rows.length) return 0;
     await this.ensureTables();
+    rows = dedupeByKey(rows, l => l.line_id);
 
     if (this.pgPool) {
       const client = await this.pgPool.connect();
       try {
         await client.query('BEGIN');
-        for (const l of rows) {
+        for (let i = 0; i < rows.length; i += CHUNK) {
+          const chunk = rows.slice(i, i + CHUNK);
+          const placeholders = chunk.map((_, idx) => {
+            const b = idx * 8;
+            return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},NOW(),NOW())`;
+          }).join(',');
+          // scanned_quantity is intentionally NOT overwritten on re-sync
+          const params = chunk.flatMap(l => [
+            l.line_id, l.shipment_id, l.batch_id, l.vendor_code, l.sku, l.item_name, l.ean, l.incoming_qty,
+          ]);
           await client.query(
             `INSERT INTO vendor_shipment_lines
                (line_id, shipment_id, batch_id, vendor_code, sku, item_name, ean, incoming_qty, synced_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+             VALUES ${placeholders}
              ON CONFLICT (line_id) DO UPDATE SET
                shipment_id  = EXCLUDED.shipment_id,
                batch_id     = EXCLUDED.batch_id,
@@ -274,8 +320,7 @@ export class SupabaseVendorShipmentRepository {
                ean          = EXCLUDED.ean,
                incoming_qty = EXCLUDED.incoming_qty,
                synced_at    = NOW()`,
-            // scanned_quantity is intentionally NOT overwritten on re-sync
-            [l.line_id, l.shipment_id, l.batch_id, l.vendor_code, l.sku, l.item_name, l.ean, l.incoming_qty]
+            params
           );
         }
         await client.query('COMMIT');

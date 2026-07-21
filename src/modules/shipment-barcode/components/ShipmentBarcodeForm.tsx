@@ -21,6 +21,8 @@ import {
   sendSessionDuplicateEmail,
 } from '../../../shared/services/EANDuplicateService';
 
+const APP_SCRIPT_FOR_BARCODE = import.meta.env.VITE_APP_SCRIPT_FOR_BARCODE === 'true';
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ShipmentSummary {
@@ -142,6 +144,11 @@ export function ShipmentBarcodeForm() {
   const [batchDetails, setBatchDetails] = useState<Record<string, BatchDetail>>({});
   const [batchDetailLoading, setBatchDetailLoading] = useState<string | null>(null);
   const [expandedShipmentId, setExpandedShipmentId] = useState<string | null>(null);
+  // PO ID search: resolved via inventory_po_lines.po_id → po_ref_no (== vendor
+  // shipment's shipment_id) when the local batch/shipment substring match misses.
+  const [poResolvedShipmentId, setPoResolvedShipmentId] = useState<string | null>(null);
+  const [poSearchLoading, setPoSearchLoading] = useState(false);
+  const poSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Active shipment lines (re-populated locally on scan-start or restore) ─
   const [activeShipmentLines, setActiveShipmentLines] = useState<ShipmentLine[]>([]);
@@ -314,22 +321,51 @@ export function ShipmentBarcodeForm() {
   // ── Search: auto-expand when query matches a shipment_id ──────────────────
 
   useEffect(() => {
-    if (!searchQuery) return;
+    if (poSearchTimeoutRef.current) { clearTimeout(poSearchTimeoutRef.current); poSearchTimeoutRef.current = null; }
+    if (!searchQuery) { setPoResolvedShipmentId(null); return; }
     const q = searchQuery.toLowerCase().trim();
     const batchMatch = batches.find(b => b.batch_id.toLowerCase().includes(q));
-    if (!batchMatch) {
-      const viaShipment = batches.find(b =>
-        (b.vendor_summary || []).some(s => s.shipment_id.toLowerCase().includes(q))
+    if (batchMatch) { setPoResolvedShipmentId(null); return; }
+
+    const viaShipment = batches.find(b =>
+      (b.vendor_summary || []).some(s => s.shipment_id.toLowerCase().includes(q))
+    );
+    if (viaShipment) {
+      setPoResolvedShipmentId(null);
+      loadBatchDetail(viaShipment.batch_id);
+      const matchingSummary = (viaShipment.vendor_summary || []).find(s =>
+        s.shipment_id.toLowerCase().includes(q)
       );
-      if (viaShipment) {
-        loadBatchDetail(viaShipment.batch_id);
-        const matchingSummary = (viaShipment.vendor_summary || []).find(s =>
-          s.shipment_id.toLowerCase().includes(q)
-        );
-        if (matchingSummary) setExpandedShipmentId(matchingSummary.shipment_id);
-      }
+      if (matchingSummary) setExpandedShipmentId(matchingSummary.shipment_id);
+      return;
     }
-  }, [searchQuery]);
+
+    // No local batch/shipment match — try resolving the query as a PO ID.
+    // inventory_po_lines.po_id → po_ref_no, and po_ref_no == vendor_shipments.shipment_id.
+    if (!APP_SCRIPT_FOR_BARCODE) { setPoResolvedShipmentId(null); return; }
+    poSearchTimeoutRef.current = setTimeout(async () => {
+      setPoSearchLoading(true);
+      try {
+        const res = await fetch(`/api/receiving-sheet/search?po_id=${encodeURIComponent(searchQuery.trim())}`);
+        if (!res.ok) { setPoResolvedShipmentId(null); return; }
+        const data = await res.json();
+        // data.shipment_id is inventory_po_lines' own (unrelated) shipment_id column
+        // (e.g. "24169") — the field that matches vendor_shipments.shipment_id is
+        // po_ref_no (e.g. "VS-PW260704-1"). See the search endpoint's own comment.
+        if (data.po_ref_no && data.batch_id) {
+          setPoResolvedShipmentId(data.po_ref_no);
+          loadBatchDetail(data.batch_id);
+          setExpandedShipmentId(data.po_ref_no);
+        } else {
+          setPoResolvedShipmentId(null);
+        }
+      } catch {
+        setPoResolvedShipmentId(null);
+      } finally {
+        setPoSearchLoading(false);
+      }
+    }, 400);
+  }, [searchQuery, batches]);
 
   // ── Data loaders ─────────────────────────────────────────────────────────
 
@@ -595,9 +631,12 @@ export function ShipmentBarcodeForm() {
       if (!q) return typeMatch;
       const batchMatch    = b.batch_id.toLowerCase().includes(q);
       const shipmentMatch = (b.vendor_summary || []).some(s => s.shipment_id.toLowerCase().includes(q));
-      return typeMatch && (batchMatch || shipmentMatch);
+      const poMatch        = poResolvedShipmentId
+        ? (b.vendor_summary || []).some(s => s.shipment_id === poResolvedShipmentId)
+        : false;
+      return typeMatch && (batchMatch || shipmentMatch || poMatch);
     });
-  }, [batches, searchQuery, typeFilter]);
+  }, [batches, searchQuery, typeFilter, poResolvedShipmentId]);
 
   const activeRows = activeShipmentLines.filter(l => (countingQty[l.sku] || 0) > 0);
   const linesCompleted = activeShipmentLines.filter(l => (countingQty[l.sku] || 0) >= l.original_quantity).length;
@@ -696,9 +735,23 @@ export function ShipmentBarcodeForm() {
                 type="text"
                 value={searchQuery}
                 onChange={e => updateParams({ q: e.target.value }, { replace: true })}
-                placeholder="Search by batch ID or shipment ID…"
-                className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 font-mono transition"
+                placeholder={
+                  APP_SCRIPT_FOR_BARCODE
+                    ? 'Search by batch ID, shipment ID, or PO ID…'
+                    : 'Search by batch ID or shipment ID…'
+                }
+                className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-9 py-2 text-xs text-white placeholder-slate-500 font-mono transition"
               />
+              {poSearchLoading && (
+                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                  <RefreshCw className="h-3.5 w-3.5 text-indigo-400 animate-spin" />
+                </div>
+              )}
+              {!poSearchLoading && poResolvedShipmentId && (
+                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none" title={`Resolved to shipment ${poResolvedShipmentId}`}>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                </div>
+              )}
             </div>
             <div className="inline-flex rounded-lg bg-slate-800 p-0.5 shrink-0">
               {(['all', 'air', 'sea'] as const).map(f => (
@@ -810,7 +863,8 @@ export function ShipmentBarcodeForm() {
                       {detail?.vendor_shipments?.length
                         ? detail.vendor_shipments.map(shipment => {
                             const shipIsExpanded = expandedShipmentId === shipment.shipment_id;
-                            const isHighlighted  = q && shipment.shipment_id.toLowerCase().includes(q);
+                            const isHighlighted  = (q && shipment.shipment_id.toLowerCase().includes(q))
+                              || shipment.shipment_id === poResolvedShipmentId;
 
                             return (
                               <div
@@ -896,7 +950,8 @@ export function ShipmentBarcodeForm() {
                           })
                         : /* Fallback: show vendor_summary rows without line items */
                           (batch.vendor_summary || []).map(summary => {
-                            const isHighlighted = q && summary.shipment_id.toLowerCase().includes(q);
+                            const isHighlighted = (q && summary.shipment_id.toLowerCase().includes(q))
+                              || summary.shipment_id === poResolvedShipmentId;
                             return (
                               <div
                                 key={summary.shipment_id}

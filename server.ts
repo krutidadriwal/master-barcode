@@ -375,6 +375,14 @@ async function startServer() {
     }
     try {
       console.log('[Shipment Sync] Calling Apps Script sync_shipment_data…');
+      // Kicked off now, awaited at the end — it hits a completely separate Apps
+      // Script deployment (INVENTORY_SCRIPTS_URL) and Supabase table, so there's
+      // no reason to pay for its ~5s round trip sequentially after this one.
+      const receivingSheetPromise: Promise<{ lines: number } | { error: string }> =
+        syncReceivingSheet().catch(err => {
+          console.warn('[Receiving Sheet Sync] Skipped/failed:', err.message);
+          return { error: err.message };
+        });
       const r = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -447,16 +455,11 @@ async function startServer() {
 
       console.log(`[Shipment Sync] Done — batches:${bCount} shipments:${sCount} lines:${lCount}`);
 
-      // Also sync the Download Receiving Sheet table (separate 'Inventory' spreadsheet).
       // Best-effort: a failure here (e.g. flag off, script URL unset) must not fail the
       // shipment sync that the Refresh button is primarily used for.
-      let receivingSheetResult: { lines: number } | { error: string };
-      try {
-        receivingSheetResult = await syncReceivingSheet();
+      const receivingSheetResult = await receivingSheetPromise;
+      if ('lines' in receivingSheetResult) {
         console.log(`[Receiving Sheet Sync] Done — lines:${receivingSheetResult.lines}`);
-      } catch (err: any) {
-        console.warn('[Receiving Sheet Sync] Skipped/failed:', err.message);
-        receivingSheetResult = { error: err.message };
       }
 
       return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount, receiving_sheet: receivingSheetResult });
