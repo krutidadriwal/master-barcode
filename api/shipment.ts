@@ -67,23 +67,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Vendor Shipment Barcode routes ────────────────────────────────────────
 
-    // POST /api/shipment/sync — pull Batches, Vendor_Shipments, Vendor_Shipment_Lines from
-    // Google Sheets via Apps Script and upsert into Supabase. scanned_quantity is preserved.
+    // POST /api/shipment/sync?target=batches|shipments|lines|receiving_sheet|all
+    // Pulls ONE sheet (or, for 'all', every sheet — kept for local/manual use)
+    // from Google Sheets via Apps Script and upserts into Supabase. Each sheet
+    // is its own request specifically so it fits inside Vercel's 10s Hobby-plan
+    // function timeout — Vendor_Shipment_Lines alone can be 600+ rows, so
+    // fetching everything in one call routinely blew past that budget.
+    // scanned_quantity is always preserved (never read from the sheet).
     if (action === 'sync') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+
+      const target = ((req.query.target as string) || 'all').trim();
+      const validTargets = ['all', 'batches', 'shipments', 'lines', 'receiving_sheet'];
+      if (!validTargets.includes(target)) {
+        return res.status(400).json({ error: `Invalid target "${target}". Must be one of: ${validTargets.join(', ')}.` });
+      }
+
+      // Receiving Sheet lives on a completely separate Apps Script deployment
+      // (INVENTORY_SCRIPTS_URL) and Supabase table — handle it independently.
+      if (target === 'receiving_sheet') {
+        const receivingSheetResult = await syncReceivingSheetBestEffort();
+        return res.json({ success: true, receiving_sheet: receivingSheetResult });
+      }
+
       const scriptUrl = process.env.APP_SCRIPTS_URL;
       if (!scriptUrl?.trim()) return res.status(503).json({ error: 'APP_SCRIPTS_URL is not configured.' });
 
-      // Kicked off now, awaited at the end — it hits a completely separate Apps
-      // Script deployment (INVENTORY_SCRIPTS_URL) and Supabase table, so there's
-      // no reason to pay for its ~5s round trip sequentially after this one.
-      // This whole request runs under Vercel's 10s function timeout.
-      const receivingSheetPromise = syncReceivingSheetBestEffort();
+      const scriptPayload: Record<string, string> = { action: 'sync_shipment_data' };
+      if (target !== 'all') scriptPayload.sheet = target;
 
       const r = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'sync_shipment_data' }),
+        body: JSON.stringify(scriptPayload),
       });
       if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
       const data = await r.json() as any;
@@ -113,7 +129,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           invoice_no:   String(s['invoice_no']   || '').trim() || null,
           invoice_date: String(s['invoice_date'] || '').trim() || null,
           carton_count: parseInt(s['carton_count'] || 0, 10) || 0,
-          total_units:  0, // computed below from lines
+          total_units:  0, // ignored by syncShipments — owned by syncLines
         }));
 
       const lines = rawLines
@@ -134,18 +150,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           };
         });
 
-      const unitsByShipment: Record<string, number> = {};
-      for (const l of lines) unitsByShipment[l.shipment_id] = (unitsByShipment[l.shipment_id] || 0) + l.incoming_qty;
-      for (const s of shipments) s.total_units = unitsByShipment[s.shipment_id] || 0;
-
+      // Each sync*() call is a no-op (returns 0 immediately) when its array is
+      // empty, so it's safe to call all three regardless of which sheet(s) the
+      // Apps Script call above actually returned data for.
       const bCount = await vendorShipmentRepo.syncBatches(batches);
       const sCount = await vendorShipmentRepo.syncShipments(shipments);
       const lCount = await vendorShipmentRepo.syncLines(lines);
 
-      // Also sync the Download Receiving Sheet table — best-effort, does not fail this request.
-      const receivingSheetResult = await receivingSheetPromise;
-
-      return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount, receiving_sheet: receivingSheetResult });
+      return res.json({ success: true, target, batches: bCount, shipments: sCount, lines: lCount });
     }
 
     // GET /api/shipment/batches — list all batches with summary fields

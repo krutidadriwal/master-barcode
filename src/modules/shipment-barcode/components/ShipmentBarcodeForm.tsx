@@ -103,6 +103,15 @@ type ScanStatusState = {
   message: string;
 };
 
+type SyncTargetId = 'batches' | 'shipments' | 'lines' | 'receiving_sheet';
+
+const SYNC_TARGETS: { id: SyncTargetId; label: string; description: string }[] = [
+  { id: 'batches',        label: 'Batches',                    description: 'Batch metadata — status, ETA, carrier' },
+  { id: 'shipments',      label: 'Vendor Shipments',            description: 'Shipment headers — vendor, invoice, cartons' },
+  { id: 'lines',          label: 'Vendor Shipment Lines',       description: 'SKU line items and quantities (largest sheet)' },
+  { id: 'receiving_sheet', label: 'Receiving Sheet (PO Lines)', description: 'Used by the Download Receiving Sheet page' },
+];
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function ShipmentBarcodeForm() {
@@ -149,6 +158,14 @@ export function ShipmentBarcodeForm() {
   const [poResolvedShipmentId, setPoResolvedShipmentId] = useState<string | null>(null);
   const [poSearchLoading, setPoSearchLoading] = useState(false);
   const poSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Per-sheet Refresh dropdown ───────────────────────────────────────────
+  const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
+  const [syncingTarget, setSyncingTarget] = useState<SyncTargetId | null>(null);
+  const [syncResults, setSyncResults] = useState<Record<SyncTargetId, { ok: boolean; message: string } | null>>({
+    batches: null, shipments: null, lines: null, receiving_sheet: null,
+  });
+  const refreshMenuRef = useRef<HTMLDivElement>(null);
 
   // ── Active shipment lines (re-populated locally on scan-start or restore) ─
   const [activeShipmentLines, setActiveShipmentLines] = useState<ShipmentLine[]>([]);
@@ -241,6 +258,19 @@ export function ShipmentBarcodeForm() {
   useEffect(() => {
     localStorage.setItem('shipment_scan_mode', scanMode);
   }, [scanMode]);
+
+  // ── Close the Refresh dropdown on outside click ────────────────────────────
+
+  useEffect(() => {
+    if (!refreshMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (refreshMenuRef.current && !refreshMenuRef.current.contains(e.target as Node)) {
+        setRefreshMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [refreshMenuOpen]);
 
   // ── Auto-focus loop (only in scanning view) ───────────────────────────────
 
@@ -369,24 +399,10 @@ export function ShipmentBarcodeForm() {
 
   // ── Data loaders ─────────────────────────────────────────────────────────
 
-  const loadBatches = async (syncFirst = false) => {
+  const loadBatches = async () => {
     setBatchesLoading(true);
     setBatchesError(null);
     try {
-      if (syncFirst) {
-        const syncRes = await fetch('/api/shipment/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        const syncData = await syncRes.json().catch(() => ({} as any));
-        if (!syncRes.ok) {
-          console.warn('[Shipment] Sync warning:', syncData.error || syncRes.status);
-        }
-        // receiving_sheet sync is best-effort and never fails this request (status stays 200
-        // even if it errored) — surface it separately so failures aren't silently swallowed.
-        if (syncData.receiving_sheet?.error) {
-          console.warn('[Receiving Sheet] Sync failed:', syncData.receiving_sheet.error);
-        } else if (syncData.receiving_sheet?.lines != null) {
-          console.log(`[Receiving Sheet] Synced ${syncData.receiving_sheet.lines} line(s).`);
-        }
-      }
       const res = await fetch('/api/shipment/batches');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -396,6 +412,37 @@ export function ShipmentBarcodeForm() {
       setBatchesError(err.message || 'Failed to load batches.');
     } finally {
       setBatchesLoading(false);
+    }
+  };
+
+  // Each sheet is synced by its own request (?target=...) so it comfortably
+  // fits inside Vercel's 10s Hobby-plan function timeout — Vendor_Shipment_Lines
+  // alone can be 600+ rows, which blew past that budget when synced all at once.
+  const runTargetSync = async (target: SyncTargetId) => {
+    setSyncingTarget(target);
+    setSyncResults(prev => ({ ...prev, [target]: null }));
+    try {
+      const res = await fetch(`/api/shipment/sync?target=${target}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      let message: string;
+      if (target === 'batches')         message = `${data.batches ?? 0} batch${data.batches === 1 ? '' : 'es'} synced`;
+      else if (target === 'shipments')  message = `${data.shipments ?? 0} shipment${data.shipments === 1 ? '' : 's'} synced`;
+      else if (target === 'lines')      message = `${data.lines ?? 0} line${data.lines === 1 ? '' : 's'} synced`;
+      else if (data.receiving_sheet?.error) throw new Error(data.receiving_sheet.error);
+      else                               message = `${data.receiving_sheet?.lines ?? 0} line${data.receiving_sheet?.lines === 1 ? '' : 's'} synced`;
+
+      setSyncResults(prev => ({ ...prev, [target]: { ok: true, message } }));
+      if (target !== 'receiving_sheet') await loadBatches();
+    } catch (err: any) {
+      setSyncResults(prev => ({ ...prev, [target]: { ok: false, message: err.message || 'Sync failed.' } }));
+    } finally {
+      setSyncingTarget(null);
     }
   };
 
@@ -682,14 +729,59 @@ export function ShipmentBarcodeForm() {
             Download Receiving Sheet
           </button>
           {view === 'browse' && !showReceivingSheet && (
-            <button
-              onClick={() => loadBatches(true)}
-              disabled={batchesLoading}
-              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-semibold py-1.5 px-3 rounded-lg transition cursor-pointer select-none whitespace-nowrap"
-            >
-              <RefreshCw className={`h-3 w-3 ${batchesLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
+            <div className="relative" ref={refreshMenuRef}>
+              <button
+                onClick={() => setRefreshMenuOpen(o => !o)}
+                disabled={batchesLoading}
+                className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-semibold py-1.5 px-3 rounded-lg transition cursor-pointer select-none whitespace-nowrap"
+              >
+                <RefreshCw className={`h-3 w-3 ${batchesLoading || syncingTarget ? 'animate-spin' : ''}`} />
+                Refresh
+                <ChevronDown className={`h-3 w-3 transition-transform ${refreshMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {refreshMenuOpen && (
+                <div className="absolute right-0 top-full mt-2 w-80 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                  <div className="px-3.5 py-2.5 border-b border-slate-800">
+                    <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Select a sheet to sync</p>
+                    <p className="text-[10px] text-slate-600 mt-0.5">Each sheet syncs independently to stay under the server's request time limit.</p>
+                  </div>
+                  <div className="py-1">
+                    {SYNC_TARGETS.map(t => {
+                      const busy   = syncingTarget === t.id;
+                      const result = syncResults[t.id];
+                      return (
+                        <button
+                          key={t.id}
+                          onClick={() => runTargetSync(t.id)}
+                          disabled={syncingTarget !== null}
+                          className="w-full flex items-start gap-2.5 px-3.5 py-2.5 hover:bg-slate-800/60 disabled:cursor-not-allowed transition text-left"
+                        >
+                          <span className="mt-0.5 shrink-0">
+                            {busy
+                              ? <RefreshCw className="h-3.5 w-3.5 text-indigo-400 animate-spin" />
+                              : result?.ok
+                                ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                                : result && !result.ok
+                                  ? <XCircle className="h-3.5 w-3.5 text-red-400" />
+                                  : <RefreshCw className="h-3.5 w-3.5 text-slate-600" />
+                            }
+                          </span>
+                          <span className="flex-1 min-w-0">
+                            <span className="block text-[11px] font-bold text-slate-100">{t.label}</span>
+                            <span className="block text-[10px] text-slate-500">{t.description}</span>
+                            {result && (
+                              <span className={`block text-[10px] mt-0.5 font-medium ${result.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {result.message}
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           {view === 'scanning' && !locked && (
             <div className="flex items-center gap-3">

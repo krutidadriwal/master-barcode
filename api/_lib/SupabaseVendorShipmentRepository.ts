@@ -235,6 +235,12 @@ export class SupabaseVendorShipmentRepository {
     return 0;
   }
 
+  // total_units is deliberately NOT part of this upsert (not in the INSERT
+  // column list, not touched on conflict) — it's owned by syncLines, which
+  // recomputes it from vendor_shipment_lines after every lines sync. This lets
+  // "Vendor Shipments" and "Vendor Shipment Lines" be synced as fully
+  // independent requests (see the per-sheet Refresh UI) without one silently
+  // zeroing out totals the other is responsible for.
   async syncShipments(rows: VendorShipment[]): Promise<number> {
     if (!rows.length) return 0;
     await this.ensureTables();
@@ -247,15 +253,15 @@ export class SupabaseVendorShipmentRepository {
         for (let i = 0; i < rows.length; i += CHUNK) {
           const chunk = rows.slice(i, i + CHUNK);
           const placeholders = chunk.map((_, idx) => {
-            const b = idx * 7;
-            return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},NOW())`;
+            const b = idx * 6;
+            return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},NOW())`;
           }).join(',');
           const params = chunk.flatMap(s => [
-            s.shipment_id, s.batch_id, s.vendor_code, s.invoice_no, s.invoice_date, s.carton_count, s.total_units,
+            s.shipment_id, s.batch_id, s.vendor_code, s.invoice_no, s.invoice_date, s.carton_count,
           ]);
           await client.query(
             `INSERT INTO vendor_shipments
-               (shipment_id, batch_id, vendor_code, invoice_no, invoice_date, carton_count, total_units, synced_at)
+               (shipment_id, batch_id, vendor_code, invoice_no, invoice_date, carton_count, synced_at)
              VALUES ${placeholders}
              ON CONFLICT (shipment_id) DO UPDATE SET
                batch_id     = EXCLUDED.batch_id,
@@ -263,7 +269,6 @@ export class SupabaseVendorShipmentRepository {
                invoice_no   = EXCLUDED.invoice_no,
                invoice_date = EXCLUDED.invoice_date,
                carton_count = EXCLUDED.carton_count,
-               total_units  = EXCLUDED.total_units,
                synced_at    = NOW()`,
             params
           );
@@ -279,9 +284,14 @@ export class SupabaseVendorShipmentRepository {
     }
 
     if (this.supabaseClient) {
+      const upsertRows = rows.map(s => ({
+        shipment_id: s.shipment_id, batch_id: s.batch_id, vendor_code: s.vendor_code,
+        invoice_no: s.invoice_no, invoice_date: s.invoice_date, carton_count: s.carton_count,
+        synced_at: new Date().toISOString(),
+      }));
       const { error } = await this.supabaseClient
         .from('vendor_shipments')
-        .upsert(rows.map(s => ({ ...s, synced_at: new Date().toISOString() })), { onConflict: 'shipment_id' });
+        .upsert(upsertRows, { onConflict: 'shipment_id' });
       if (error) throw error;
       return rows.length;
     }
@@ -293,6 +303,7 @@ export class SupabaseVendorShipmentRepository {
     if (!rows.length) return 0;
     await this.ensureTables();
     rows = dedupeByKey(rows, l => l.line_id);
+    const shipmentIds = Array.from(new Set(rows.map(l => l.shipment_id)));
 
     if (this.pgPool) {
       const client = await this.pgPool.connect();
@@ -323,6 +334,17 @@ export class SupabaseVendorShipmentRepository {
             params
           );
         }
+        // Refresh total_units on every shipment touched by this batch of lines —
+        // vendor_shipments.total_units is derived, not sheet-sourced.
+        if (shipmentIds.length) {
+          await client.query(
+            `UPDATE vendor_shipments s
+             SET total_units = COALESCE(
+               (SELECT SUM(l.incoming_qty) FROM vendor_shipment_lines l WHERE l.shipment_id = s.shipment_id), 0)
+             WHERE s.shipment_id = ANY($1::text[])`,
+            [shipmentIds]
+          );
+        }
         await client.query('COMMIT');
         return rows.length;
       } catch (err) {
@@ -344,6 +366,18 @@ export class SupabaseVendorShipmentRepository {
         .from('vendor_shipment_lines')
         .upsert(upsertRows, { onConflict: 'line_id', ignoreDuplicates: false });
       if (error) throw error;
+
+      // No correlated-subquery UPDATE via PostgREST — recompute per shipment.
+      for (const id of shipmentIds) {
+        const { data, error: selErr } = await this.supabaseClient
+          .from('vendor_shipment_lines').select('incoming_qty').eq('shipment_id', id);
+        if (selErr) throw selErr;
+        const total = (data || []).reduce((sum: number, r: any) => sum + (r.incoming_qty || 0), 0);
+        const { error: updErr } = await this.supabaseClient
+          .from('vendor_shipments').update({ total_units: total }).eq('shipment_id', id);
+        if (updErr) throw updErr;
+      }
+
       return rows.length;
     }
 

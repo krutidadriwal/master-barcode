@@ -368,25 +368,43 @@ async function startServer() {
     }
   });
 
-  app.post('/api/shipment/sync', async (_req, res) => {
+  // POST /api/shipment/sync?target=batches|shipments|lines|receiving_sheet|all
+  // Pulls ONE sheet (or, for 'all', every sheet — kept for local/manual use)
+  // from Google Sheets via Apps Script and upserts into Supabase. Each sheet
+  // is its own request specifically so it fits inside Vercel's 10s Hobby-plan
+  // function timeout — Vendor_Shipment_Lines alone can be 600+ rows, so
+  // fetching everything in one call routinely blew past that budget.
+  app.post('/api/shipment/sync', async (req, res) => {
+    const target = ((req.query.target as string) || 'all').trim();
+    const validTargets = ['all', 'batches', 'shipments', 'lines', 'receiving_sheet'];
+    if (!validTargets.includes(target)) {
+      return res.status(400).json({ error: `Invalid target "${target}". Must be one of: ${validTargets.join(', ')}.` });
+    }
+
+    if (target === 'receiving_sheet') {
+      try {
+        const receivingSheetResult = await syncReceivingSheet();
+        console.log(`[Receiving Sheet Sync] Done — lines:${receivingSheetResult.lines}`);
+        return res.json({ success: true, receiving_sheet: receivingSheetResult });
+      } catch (err: any) {
+        console.warn('[Receiving Sheet Sync] Failed:', err.message);
+        return res.status(500).json({ error: err.message || 'Receiving sheet sync failed.' });
+      }
+    }
+
     const scriptUrl = process.env.APP_SCRIPTS_URL;
     if (!scriptUrl?.trim()) {
       return res.status(503).json({ error: 'APP_SCRIPTS_URL is not configured.' });
     }
     try {
-      console.log('[Shipment Sync] Calling Apps Script sync_shipment_data…');
-      // Kicked off now, awaited at the end — it hits a completely separate Apps
-      // Script deployment (INVENTORY_SCRIPTS_URL) and Supabase table, so there's
-      // no reason to pay for its ~5s round trip sequentially after this one.
-      const receivingSheetPromise: Promise<{ lines: number } | { error: string }> =
-        syncReceivingSheet().catch(err => {
-          console.warn('[Receiving Sheet Sync] Skipped/failed:', err.message);
-          return { error: err.message };
-        });
+      console.log(`[Shipment Sync] Calling Apps Script sync_shipment_data (target=${target})…`);
+      const scriptPayload: Record<string, string> = { action: 'sync_shipment_data' };
+      if (target !== 'all') scriptPayload.sheet = target;
+
       const r = await fetch(scriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'sync_shipment_data' }),
+        body: JSON.stringify(scriptPayload),
       });
       if (!r.ok) throw new Error(`Apps Script HTTP ${r.status}`);
       const raw = await r.text();
@@ -411,7 +429,7 @@ async function startServer() {
           remarks:           String(b['remarks']           || '').trim() || null,
         }));
 
-      // Map Vendor_Shipments (no total_units column — computed from lines below)
+      // Map Vendor_Shipments (total_units ignored — owned by syncLines)
       const shipments = rawShipments
         .filter((s: any) => s['shipment_id'])
         .map((s: any) => ({
@@ -421,7 +439,7 @@ async function startServer() {
           invoice_no:   String(s['invoice_no']   || '').trim() || null,
           invoice_date: String(s['invoice_date'] || '').trim() || null,
           carton_count: parseInt(s['carton_count'] || 0, 10) || 0,
-          total_units:  0, // computed below from lines
+          total_units:  0,
         }));
 
       // Map Vendor_Shipment_Lines (qty column is invoice_qty; line_id comes from sheet)
@@ -443,26 +461,16 @@ async function startServer() {
           };
         });
 
-      // Compute total_units per shipment from mapped lines
-      const unitsByShipment: Record<string, number> = {};
-      for (const l of lines) unitsByShipment[l.shipment_id] = (unitsByShipment[l.shipment_id] || 0) + l.incoming_qty;
-      for (const s of shipments) s.total_units = unitsByShipment[s.shipment_id] || 0;
-
-      // Must be sequential: lines FK → shipments FK → batches
+      // Each sync*() call is a no-op (returns 0 immediately) when its array is
+      // empty, so it's safe to call all three regardless of which sheet(s) the
+      // Apps Script call above actually returned data for.
       const bCount = await vendorShipmentRepo.syncBatches(batches);
       const sCount = await vendorShipmentRepo.syncShipments(shipments);
       const lCount = await vendorShipmentRepo.syncLines(lines);
 
       console.log(`[Shipment Sync] Done — batches:${bCount} shipments:${sCount} lines:${lCount}`);
 
-      // Best-effort: a failure here (e.g. flag off, script URL unset) must not fail the
-      // shipment sync that the Refresh button is primarily used for.
-      const receivingSheetResult = await receivingSheetPromise;
-      if ('lines' in receivingSheetResult) {
-        console.log(`[Receiving Sheet Sync] Done — lines:${receivingSheetResult.lines}`);
-      }
-
-      return res.json({ success: true, batches: bCount, shipments: sCount, lines: lCount, receiving_sheet: receivingSheetResult });
+      return res.json({ success: true, target, batches: bCount, shipments: sCount, lines: lCount });
     } catch (err: any) {
       console.error('[Shipment Sync] Failed:', err.message);
       return res.status(500).json({ error: err.message || 'Shipment sync failed.' });
