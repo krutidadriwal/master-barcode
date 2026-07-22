@@ -1194,9 +1194,13 @@ export function ShipmentBarcodeForm() {
                             <td className="py-2 px-3 text-right font-mono text-slate-400">{pendingQty}</td>
                             <td className="py-2 px-3 text-right font-mono font-bold text-white">{received}</td>
                             <td className="py-2 px-3 text-center">
-                              {received >= line.original_quantity ? (
+                              {excessQty > 0 ? (
+                                <span className="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
+                                  Excess
+                                </span>
+                              ) : received >= line.original_quantity ? (
                                 <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
-                                  {excessQty > 0 ? 'Excess' : 'Done'}
+                                  Done
                                 </span>
                               ) : (
                                 <span className="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-2 py-0.5 rounded text-[9px] font-bold uppercase">

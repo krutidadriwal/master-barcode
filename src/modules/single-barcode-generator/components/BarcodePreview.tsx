@@ -210,11 +210,16 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
 
   const validBarcode = (val?: string) => { const v = val?.trim() ?? ''; return v !== '' && v !== '0' && !/0{5,}$/.test(v); };
 
-  // Barcode priority: EANUPC → sku numeric root (skips empty or literal "0")
-  const skuRoot = (product.sku?.trim() || '990011').replace(/[^0-9]+$/i, '') || product.sku?.trim() || '990011';
+  // Barcode priority: EANUPC → full SKU (CODE128 supports alphanumeric, so a
+  // trailing suffix like "R" for refurbished must stay in the encoded value —
+  // stripping it here would print a barcode for a different, wrong SKU).
+  const fullSku = product.sku?.trim() || '990011';
+  // Numeric-only root is kept separately for the "Item No" display toggle
+  // below (useStrippedSku) — display-only, never fed into the barcode itself.
+  const skuRoot = fullSku.replace(/[^0-9]+$/i, '') || fullSku;
   const barcodeValue = validBarcode(product.EANUPC)
     ? product.EANUPC!.trim()
-    : skuRoot;
+    : fullSku;
 
   // Detect format dynamically using shared services
   const autoFormat = BarcodeGeneratorService.detectFormat(barcodeValue);
