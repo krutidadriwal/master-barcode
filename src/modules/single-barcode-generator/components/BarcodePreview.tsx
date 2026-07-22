@@ -149,6 +149,46 @@ function useFontsReady(): boolean {
 
 export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku = false }: BarcodePreviewProps) {
   const fontsReady = useFontsReady();
+
+  // Item name is capped at 2 lines — an unusually long name can otherwise push
+  // the barcode down far enough to run past the 30mm label edge and get cut
+  // off by the printer. Measured against the live DOM (not a fixed character
+  // count) so the cutoff point stays accurate regardless of font metrics or
+  // column width, and matches exactly what html2canvas will later rasterize
+  // for print/export (it captures this same DOM, not a separate render path).
+  const nameRef = useRef<HTMLDivElement>(null);
+  const [displayName, setDisplayName] = useState(product.product_name || '');
+
+  useEffect(() => {
+    const fullName = product.product_name || '';
+    const el = nameRef.current;
+    if (!fontsReady || !el) { setDisplayName(fullName); return; }
+
+    const lineHeightPx = parseFloat(getComputedStyle(el).lineHeight)
+      || parseFloat(getComputedStyle(el).fontSize) * 1.2;
+    const maxHeightPx = lineHeightPx * 2 + 1; // +1px rounding tolerance
+
+    const previous = el.textContent;
+    el.textContent = fullName;
+    if (el.scrollHeight <= maxHeightPx) {
+      el.textContent = previous;
+      setDisplayName(fullName);
+      return;
+    }
+
+    // Binary search the longest prefix (+ "...") that still fits in 2 lines.
+    let lo = 0, hi = fullName.length, best = '...';
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const candidate = fullName.slice(0, mid).trimEnd() + '...';
+      el.textContent = candidate;
+      if (el.scrollHeight <= maxHeightPx) { best = candidate; lo = mid + 1; }
+      else { hi = mid - 1; }
+    }
+    el.textContent = previous;
+    setDisplayName(best);
+  }, [product.product_name, fontsReady]);
+
   // Safe formatting Helper
   const formatMrp = (rawMrp: string) => {
     const clean = rawMrp.trim();
@@ -239,8 +279,14 @@ export function BarcodePreview({ product, scale = 1.0, batchNo, useStrippedSku =
         {/* Row 1: Item */}
         <div style={{ fontWeight: 700 }}>Item</div>
         <div>:</div>
-        <div style={{ wordBreak: 'break-word', whiteSpace: 'normal', fontWeight: 700, paddingRight: '0.5mm' }}>
-          {product.product_name}
+        <div
+          ref={nameRef}
+          style={{
+            wordBreak: 'break-word', whiteSpace: 'normal', fontWeight: 700, paddingRight: '0.5mm',
+            overflow: 'hidden', maxHeight: '2em',
+          }}
+        >
+          {displayName}
         </div>
 
         {/* Row 2: Item No */}
